@@ -1,9 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
+import 'services/whisper_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FlutterGemma.initialize();
+  await WhisperService.instance.initialize();
   runApp(const MyApp());
 }
 
@@ -26,15 +28,17 @@ class ChatScreen extends StatefulWidget {
   const ChatScreen({super.key});
 
   @override
-  _ChatScreenState createState() => _ChatScreenState();
+  State<ChatScreen> createState() => ChatScreenState();
 }
 
-class _ChatScreenState extends State<ChatScreen> {
+class ChatScreenState extends State<ChatScreen> {
   final List<Map<String, String>> _messages = [];
   final TextEditingController _textController = TextEditingController();
-  bool _isLoading = false;
+  final bool _isLoading = false;
   InferenceModel? _inferenceModel;
   InferenceChat? _chat;
+  bool _isRecording = false;
+  final WhisperService _whisperService = WhisperService.instance;
 
   @override
   void initState() {
@@ -80,6 +84,40 @@ class _ChatScreenState extends State<ChatScreen> {
     });
   }
 
+  Future<void> _toggleRecording() async {
+    if (_isRecording) {
+      final audioPath = await _whisperService.stopRecording();
+      if (audioPath != null) {
+        setState(() {
+          _isRecording = false;
+        });
+
+        try {
+          final transcription =
+              await _whisperService.transcribeFromFile(audioPath);
+          await _sendMessage(transcription);
+        } catch (e) {
+          _showErrorSnackBar('Transcription failed: $e');
+        }
+      }
+    } else {
+      try {
+        await _whisperService.startRecording();
+        setState(() {
+          _isRecording = true;
+        });
+      } catch (e) {
+        _showErrorSnackBar('Failed to start recording: $e');
+      }
+    }
+  }
+
+  void _showErrorSnackBar(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
+
   Future<String> _getAIResponse(String input) async {
     if (_chat == null) {
       return 'Model not initialized. Please wait...';
@@ -107,6 +145,7 @@ class _ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _textController.dispose();
+    _whisperService.dispose();
     super.dispose();
   }
 
@@ -150,6 +189,13 @@ class _ChatScreenState extends State<ChatScreen> {
             padding: const EdgeInsets.all(8.0),
             child: Row(
               children: [
+                IconButton(
+                  icon: Icon(
+                    _isRecording ? Icons.stop : Icons.mic,
+                    color: _isRecording ? Colors.red : null,
+                  ),
+                  onPressed: _toggleRecording,
+                ),
                 Expanded(
                   child: TextField(
                     controller: _textController,
