@@ -1,0 +1,64 @@
+Plaintext
+
+# -----------------------------------------------------------------------------
+# Flutter & Dart
+# -----------------------------------------------------------------------------
+.dart_tool/
+.packages
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+build/
+**/generated_plugin_registrant.dart
+
+# Do NOT ignore .metadata (it tracks SDK properties)
+# Do NOT ignore pubspec.lock (recommended for apps to ensure reproducible builds)
+
+# -----------------------------------------------------------------------------
+# Large AI Models & Assets (Privacy/Size)
+# -----------------------------------------------------------------------------
+# Models are too large for standard Git
+*.task
+*.bin
+assets/models/
+# TTS and large media
+assets/tts/
+assets/audio/
+
+# -----------------------------------------------------------------------------
+# Android
+# -----------------------------------------------------------------------------
+.gradle/
+local.properties
+**/android/**/generated/
+**/android/app/debug/
+**/android/app/profile/
+**/android/app/release/
+android/app/.cxx/
+*.apk
+*.ap_
+*.dex
+
+# -----------------------------------------------------------------------------
+# iOS
+# -----------------------------------------------------------------------------
+*.xcworkspace
+**/ios/Flutter/.last_build_id
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/app.framework
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/Pods/
+**/ios/.symlinks/
+
+# -----------------------------------------------------------------------------
+# IDEs & System
+# -----------------------------------------------------------------------------
+.idea/
+.vscode/
+*.iml
+*.iws
+*.ipr
+.DS_Store
+*.log
+Thumbs.db

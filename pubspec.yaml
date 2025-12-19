@@ -1,0 +1,30 @@
+name: privai
+description: Flutter app with Gemma AI model
+
+publish_to: none
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_gemma: ^0.11.13
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  integration_test:
+    sdk: flutter
+  flutter_lints: ^4.0.0
+  rename: ^3.1.0
+
+flutter:
+  uses-material-design: true
+
+assets:
+  - assets
+  - assets/models/
+  - assets/models/Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task

@@ -1,0 +1,40 @@
+# Flutter Test Configuration
+
+# Test timeout settings
+timeout: 30s
+
+# Coverage settings
+coverage:
+  exclude:
+    - lib/main.dart
+    - test/**
+    - integration_test/**
+
+# Test file patterns
+files:
+  - test/**/*_test.dart
+  - integration_test/**/*_test.dart
+
+# Test reporter
+reporter: expanded
+
+# Concurrency
+concurrency: 4
+
+# Platform settings for integration tests
+platforms:
+  - android
+  - ios
+  - web
+  - linux
+  - windows
+  - macos
+
+# Custom test commands
+commands:
+  unit: flutter test test/unit_test.dart
+  widget: flutter test test/widget_test.dart
+  integration: flutter test integration_test/
+  multilingual: flutter test test/multilingual_test.dart
+  coverage: flutter test --coverage
+  all: flutter test && flutter test integration_test/

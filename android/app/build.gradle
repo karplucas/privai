@@ -1,0 +1,105 @@
+plugins {
+    id "com.android.application" version "8.7.0"
+    id "kotlin-android"
+    id "dev.flutter.flutter-gradle-plugin"
+}
+
+def localProperties = new Properties()
+def localPropertiesFile = rootProject.file('local.properties')
+if (localPropertiesFile.exists()) {
+    localPropertiesFile.withReader('UTF-8') { reader ->
+        localProperties.load(reader)
+    }
+}
+
+def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
+if (flutterVersionCode == null) {
+    flutterVersionCode = '1'
+}
+
+def flutterVersionName = localProperties.getProperty('flutter.versionName')
+if (flutterVersionName == null) {
+    flutterVersionName = '1.0'
+}
+
+repositories {
+    google()
+    mavenCentral()
+    gradlePluginPortal()
+}
+
+android {
+    namespace "com.example.privai"
+    compileSdk flutter.compileSdkVersion
+    ndkVersion "29.0.13113456"
+
+    aaptOptions {
+        noCompress 'task'
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    sourceSets {
+        main.java.srcDirs += 'src/main/kotlin'
+    }
+
+    packagingOptions {
+        pickFirst '**/libc++_shared.so'
+        pickFirst '**/libjsc.so'
+    }
+
+    defaultConfig {
+        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
+        applicationId "com.LucasKarpinski.privai"
+        // You can update the following values to match your application needs.
+        // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
+        minSdkVersion flutter.minSdkVersion
+        targetSdkVersion flutter.targetSdkVersion
+        versionCode flutterVersionCode.toInteger()
+        versionName flutterVersionName
+    }
+
+    buildTypes {
+        release {
+            // TODO: Add your own signing config for release build.
+            // Signing with the debug keys for now, so `flutter run --release` works.
+            signingConfig signingConfigs.debug
+        }
+    }
+
+    tasks.register("syncFlutterApks", Copy) {
+        // 1. Where AGP 8 puts it
+        def flutterOutDir = file("$buildDir/outputs/apk/debug")
+        // 2. Where the Flutter tool looks for it
+        def cliOutDir = new File(rootDir.parentFile, "build/app/outputs/flutter-apk")
+
+        from(flutterOutDir)
+        into(cliOutDir)
+        include("app-debug.apk")
+
+        rename { String fileName ->
+            // Flutter tool specifically looks for this name
+            return "app-debug.apk"
+        }
+
+        doFirst {
+            cliOutDir.mkdirs()
+        }
+    }
+
+    flutter {
+        source '../..'
+    }
+
+    dependencies {
+        implementation 'com.google.mediapipe:tasks-genai:0.10.29'
+        implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
+    }
+}
