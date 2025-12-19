@@ -5,7 +5,6 @@ import 'services/whisper_service.dart';
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   await FlutterGemma.initialize();
-  await WhisperService.instance.initialize();
   runApp(const MyApp());
 }
 
@@ -38,30 +37,32 @@ class ChatScreenState extends State<ChatScreen> {
   InferenceModel? _inferenceModel;
   InferenceChat? _chat;
   bool _isRecording = false;
+  bool _isTranscribing = false;
   final WhisperService _whisperService = WhisperService.instance;
 
   @override
   void initState() {
     super.initState();
     initializeChat();
+    // Initialize whisper in background
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _whisperService.initialize();
+    });
   }
 
   Future<void> initializeChat() async {
     try {
       debugPrint('Starting model initialization...');
 
-      // Use small file to test
       await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
           .fromBundled('Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task')
           .install();
 
       debugPrint('Model installation completed');
 
-      // Get the active model
       _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 2048);
       debugPrint('Active model retrieved: ${_inferenceModel != null}');
 
-      // Create a chat session from the loaded model
       _chat = await _inferenceModel!.createChat();
       debugPrint('Chat session created: ${_chat != null}');
     } catch (e) {
@@ -90,14 +91,24 @@ class ChatScreenState extends State<ChatScreen> {
       if (audioPath != null) {
         setState(() {
           _isRecording = false;
+          _isTranscribing = true;
         });
 
         try {
           final transcription =
               await _whisperService.transcribeFromFile(audioPath);
-          await _sendMessage(transcription);
+          if (transcription.isNotEmpty) {
+            await _sendMessage(transcription);
+          } else {
+            _showErrorSnackBar(
+                '🎤 No speech detected. Please speak clearly and try again.');
+          }
         } catch (e) {
-          _showErrorSnackBar('Transcription failed: $e');
+          _showErrorSnackBar('⚠️ Transcription failed: $e');
+        } finally {
+          setState(() {
+            _isTranscribing = false;
+          });
         }
       }
     } else {
@@ -106,8 +117,11 @@ class ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isRecording = true;
         });
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('🎤 Recording... Speak now!')),
+        );
       } catch (e) {
-        _showErrorSnackBar('Failed to start recording: $e');
+        _showErrorSnackBar('⚠️ Failed to start recording: $e');
       }
     }
   }
@@ -124,13 +138,8 @@ class ChatScreenState extends State<ChatScreen> {
     }
 
     try {
-      // Package the text into a Message object
       final userMessage = Message(text: input, isUser: true);
-
-      // Send the user's message to the chat
       await _chat!.addQuery(userMessage);
-
-      // Get the Gemma's response
       final response = await _chat!.generateChatResponse();
       if (response is TextResponse) {
         return response.token;
@@ -161,7 +170,8 @@ class ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('AI Chatbot'),
+        title: Text(_isTranscribing ? '🔍 Transcribing...' : '🤖 AI Chatbot'),
+        backgroundColor: _isTranscribing ? Colors.orange[100] : null,
       ),
       body: Column(
         children: [
@@ -185,30 +195,52 @@ class ChatScreenState extends State<ChatScreen> {
               },
             ),
           ),
-          Padding(
-            padding: const EdgeInsets.all(8.0),
+          Container(
+            padding: const EdgeInsets.all(16.0),
+            decoration: BoxDecoration(
+              color: Colors.grey[100],
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.grey.withValues(alpha: 0.3),
+                  spreadRadius: 1,
+                  blurRadius: 3,
+                  offset: const Offset(0, -1),
+                ),
+              ],
+            ),
             child: Row(
               children: [
                 IconButton(
-                  icon: Icon(
-                    _isRecording ? Icons.stop : Icons.mic,
-                    color: _isRecording ? Colors.red : null,
-                  ),
-                  onPressed: _toggleRecording,
+                  icon: _isTranscribing
+                      ? const SizedBox(
+                          width: 24,
+                          height: 24,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : Icon(
+                          _isRecording ? Icons.stop : Icons.mic,
+                          color: _isRecording ? Colors.red : Colors.blue,
+                        ),
+                  onPressed: _isTranscribing ? null : _toggleRecording,
                 ),
                 Expanded(
                   child: TextField(
                     controller: _textController,
                     decoration: const InputDecoration(
-                      hintText: 'Type a message...',
+                      hintText: 'Type a message or tap the microphone...',
                       border: OutlineInputBorder(),
+                      contentPadding:
+                          EdgeInsets.symmetric(horizontal: 16, vertical: 12),
                     ),
                     onSubmitted: _sendMessage,
+                    enabled: !_isTranscribing,
                   ),
                 ),
                 IconButton(
                   icon: const Icon(Icons.send),
-                  onPressed: () => _sendMessage(_textController.text),
+                  onPressed: _isTranscribing
+                      ? null
+                      : () => _sendMessage(_textController.text),
                 ),
               ],
             ),
