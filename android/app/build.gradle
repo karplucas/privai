@@ -44,6 +44,7 @@ android {
 
     kotlinOptions {
         jvmTarget = '17'
+        freeCompilerArgs += ['-Xjvm-target=17']
     }
 
     sourceSets {
@@ -53,6 +54,11 @@ android {
     packagingOptions {
         pickFirst '**/libc++_shared.so'
         pickFirst '**/libjsc.so'
+        
+        // Exclude large model files from APK compression
+        doNotStrip "*.onnx"
+        doNotStrip "*.bin"
+        doNotStrip "voices.json"
     }
 
     defaultConfig {

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'services/whisper_service.dart';
+import 'services/kokoro_tts_service.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -39,14 +40,16 @@ class ChatScreenState extends State<ChatScreen> {
   bool _isRecording = false;
   bool _isTranscribing = false;
   final WhisperService _whisperService = WhisperService.instance;
+  final KokoroTtsService _kokoroService = KokoroTtsService();
 
   @override
   void initState() {
     super.initState();
     initializeChat();
-    // Initialize whisper in background
+    // Initialize services in background
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _whisperService.initialize();
+      _kokoroService.initialize();
     });
   }
 
@@ -83,6 +86,12 @@ class ChatScreenState extends State<ChatScreen> {
     setState(() {
       _messages.add({'role': 'ai', 'text': response});
     });
+
+    try {
+      await _kokoroService.speak(response);
+    } catch (e) {
+      debugPrint('TTS Error: $e');
+    }
   }
 
   Future<void> _toggleRecording() async {
@@ -117,9 +126,11 @@ class ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isRecording = true;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('🎤 Recording... Speak now!')),
-        );
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('🎤 Recording... Speak now!')),
+          );
+        }
       } catch (e) {
         _showErrorSnackBar('⚠️ Failed to start recording: $e');
       }
@@ -155,6 +166,7 @@ class ChatScreenState extends State<ChatScreen> {
   void dispose() {
     _textController.dispose();
     _whisperService.dispose();
+    _kokoroService.dispose();
     super.dispose();
   }
 
@@ -227,7 +239,7 @@ class ChatScreenState extends State<ChatScreen> {
                   child: TextField(
                     controller: _textController,
                     decoration: const InputDecoration(
-                      hintText: 'Type a message or tap the microphone...',
+                      hintText: 'Type a message or tap microphone...',
                       border: OutlineInputBorder(),
                       contentPadding:
                           EdgeInsets.symmetric(horizontal: 16, vertical: 12),

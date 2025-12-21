@@ -1,5 +1,5 @@
 buildscript {
-    ext.kotlin_version = '2.1.0' // Update this line
+    ext.kotlin_version = '2.3.0' // Match flutter_onnxruntime requirement
     repositories {
         google()
         mavenCentral()
