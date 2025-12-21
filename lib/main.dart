@@ -34,6 +34,7 @@ class ChatScreen extends StatefulWidget {
 class ChatScreenState extends State<ChatScreen> {
   final List<Map<String, String>> _messages = [];
   final TextEditingController _textController = TextEditingController();
+  final ScrollController _scrollController = ScrollController();
   final bool _isLoading = false;
   InferenceModel? _inferenceModel;
   InferenceChat? _chat;
@@ -63,7 +64,7 @@ class ChatScreenState extends State<ChatScreen> {
 
       debugPrint('Model installation completed');
 
-      _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 2048);
+      _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 256);
       debugPrint('Active model retrieved: ${_inferenceModel != null}');
 
       _chat = await _inferenceModel!.createChat();
@@ -81,11 +82,33 @@ class ChatScreenState extends State<ChatScreen> {
     });
     _textController.clear();
 
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
+
     String response = await _getAIResponse(text);
 
-    setState(() {
-      _messages.add({'role': 'ai', 'text': response});
-    });
+    if (mounted) {
+      setState(() {
+        _messages.add({'role': 'ai', 'text': response});
+      });
+
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (_scrollController.hasClients) {
+          _scrollController.animateTo(
+            _scrollController.position.maxScrollExtent,
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOut,
+          );
+        }
+      });
+    }
 
     try {
       await _kokoroService.speak(response);
@@ -100,14 +123,29 @@ class ChatScreenState extends State<ChatScreen> {
       if (audioPath != null) {
         setState(() {
           _isRecording = false;
+          _messages.removeWhere((msg) =>
+              msg['role'] == 'system' &&
+              msg['text'] == '🎤 Recording... Speak now!');
           _isTranscribing = true;
+          _messages.add({'role': 'system', 'text': '🔍 Transcribing...'});
+        });
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
         });
 
         try {
           final transcription =
               await _whisperService.transcribeFromFile(audioPath);
           if (transcription.isNotEmpty) {
-            await _sendMessage(transcription);
+            if (mounted) {
+              await _sendMessage(transcription);
+            }
           } else {
             _showErrorSnackBar(
                 '🎤 No speech detected. Please speak clearly and try again.');
@@ -115,9 +153,23 @@ class ChatScreenState extends State<ChatScreen> {
         } catch (e) {
           _showErrorSnackBar('⚠️ Transcription failed: $e');
         } finally {
-          setState(() {
-            _isTranscribing = false;
-          });
+          if (mounted) {
+            setState(() {
+              _isTranscribing = false;
+              _messages.removeWhere((msg) =>
+                  msg['role'] == 'system' &&
+                  msg['text'] == '🔍 Transcribing...');
+            });
+            WidgetsBinding.instance.addPostFrameCallback((_) {
+              if (_scrollController.hasClients) {
+                _scrollController.animateTo(
+                  _scrollController.position.maxScrollExtent,
+                  duration: const Duration(milliseconds: 300),
+                  curve: Curves.easeOut,
+                );
+              }
+            });
+          }
         }
       }
     } else {
@@ -125,12 +177,18 @@ class ChatScreenState extends State<ChatScreen> {
         await _whisperService.startRecording();
         setState(() {
           _isRecording = true;
+          _messages
+              .add({'role': 'system', 'text': '🎤 Recording... Speak now!'});
         });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('🎤 Recording... Speak now!')),
-          );
-        }
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (_scrollController.hasClients) {
+            _scrollController.animateTo(
+              _scrollController.position.maxScrollExtent,
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOut,
+            );
+          }
+        });
       } catch (e) {
         _showErrorSnackBar('⚠️ Failed to start recording: $e');
       }
@@ -165,6 +223,7 @@ class ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _textController.dispose();
+    _scrollController.dispose();
     _whisperService.dispose();
     _kokoroService.dispose();
     super.dispose();
@@ -182,26 +241,49 @@ class ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isTranscribing ? '🔍 Transcribing...' : '🤖 AI Chatbot'),
-        backgroundColor: _isTranscribing ? Colors.orange[100] : null,
+        title: const Text('🤖 AI Chatbot'),
       ),
       body: Column(
         children: [
           Expanded(
             child: ListView.builder(
+              controller: _scrollController,
               itemCount: _messages.length,
               itemBuilder: (context, index) {
                 final message = _messages[index];
+                final isRecordingOrTranscribing = message['role'] == 'system' &&
+                    (message['text'] == '🎤 Recording... Speak now!' ||
+                        message['text'] == '🔍 Transcribing...');
                 return ListTile(
-                  title: Text(
-                    message['role'] == 'user' ? 'You' : 'AI',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: message['role'] == 'user'
-                          ? Colors.blue
-                          : Colors.green,
-                    ),
-                  ),
+                  title: isRecordingOrTranscribing
+                      ? Row(
+                          children: [
+                            const CircularProgressIndicator(strokeWidth: 2),
+                            const SizedBox(width: 8),
+                            const Text(
+                              'System',
+                              style: TextStyle(
+                                fontWeight: FontWeight.bold,
+                                color: Colors.orange,
+                              ),
+                            ),
+                          ],
+                        )
+                      : Text(
+                          message['role'] == 'user'
+                              ? 'You'
+                              : message['role'] == 'ai'
+                                  ? 'PrivAI'
+                                  : 'System',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: message['role'] == 'user'
+                                ? Colors.blue
+                                : message['role'] == 'ai'
+                                    ? Colors.green
+                                    : Colors.orange,
+                          ),
+                        ),
                   subtitle: Text(message['text']!),
                 );
               },
@@ -222,27 +304,28 @@ class ChatScreenState extends State<ChatScreen> {
             ),
             child: Row(
               children: [
-                IconButton(
-                  icon: _isTranscribing
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Icon(
-                          _isRecording ? Icons.stop : Icons.mic,
-                          color: _isRecording ? Colors.red : Colors.blue,
-                        ),
-                  onPressed: _isTranscribing ? null : _toggleRecording,
-                ),
                 Expanded(
                   child: TextField(
                     controller: _textController,
-                    decoration: const InputDecoration(
-                      hintText: 'Type a message or tap microphone...',
-                      border: OutlineInputBorder(),
-                      contentPadding:
-                          EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    decoration: InputDecoration(
+                      hintText: 'Ask PrivAI',
+                      border: const OutlineInputBorder(),
+                      contentPadding: const EdgeInsets.symmetric(
+                          horizontal: 16, vertical: 12),
+                      suffixIcon: IconButton(
+                        icon: _isTranscribing
+                            ? const SizedBox(
+                                width: 24,
+                                height: 24,
+                                child:
+                                    CircularProgressIndicator(strokeWidth: 2),
+                              )
+                            : Icon(
+                                _isRecording ? Icons.stop : Icons.mic,
+                                color: _isRecording ? Colors.red : Colors.blue,
+                              ),
+                        onPressed: _isTranscribing ? null : _toggleRecording,
+                      ),
                     ),
                     onSubmitted: _sendMessage,
                     enabled: !_isTranscribing,
