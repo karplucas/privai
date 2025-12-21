@@ -43,7 +43,7 @@ class WhisperService {
 
       if (!await fileBase.exists()) {
         final ByteData bytesBase =
-            await rootBundle.load('assets/models/ggml-tiny.bin');
+            await rootBundle.load('assets/models/ggml-large-v3-turbo-q5_0.bin');
         await fileBase.writeAsBytes(
           bytesBase.buffer
               .asUint8List(bytesBase.offsetInBytes, bytesBase.lengthInBytes),
