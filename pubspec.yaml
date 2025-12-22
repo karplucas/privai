@@ -39,5 +39,4 @@ flutter:
     - assets/tokenizer_vocab.json
     - assets/us_gold.json
     - assets/us_silver.json
-    - assets/models/
     - assets/models_list.json
