@@ -15,7 +15,7 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AI Chatbot',
+      title: 'PrivAI',
       theme: ThemeData(
         primarySwatch: Colors.blue,
       ),
@@ -48,9 +48,19 @@ class ChatScreenState extends State<ChatScreen> {
     super.initState();
     initializeChat();
     // Initialize services in background
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _whisperService.initialize();
-      _kokoroService.initialize();
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      try {
+        await _whisperService.initialize();
+        debugPrint('Whisper initialized successfully');
+      } catch (e) {
+        debugPrint('Whisper initialization failed: $e');
+      }
+      try {
+        await _kokoroService.initialize();
+        debugPrint('Kokoro initialized successfully');
+      } catch (e) {
+        debugPrint('Kokoro initialization failed: $e');
+      }
     });
   }
 
@@ -60,6 +70,7 @@ class ChatScreenState extends State<ChatScreen> {
 
       await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
           .fromBundled('Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task')
+          // .fromBundled('gemma-3n-E2B-it-int4.task')
           .install();
 
       debugPrint('Model installation completed');
@@ -111,7 +122,9 @@ class ChatScreenState extends State<ChatScreen> {
     }
 
     try {
+      debugPrint('Speaking response: "$response"');
       await _kokoroService.speak(response);
+      debugPrint('TTS completed');
     } catch (e) {
       debugPrint('TTS Error: $e');
     }
@@ -120,6 +133,7 @@ class ChatScreenState extends State<ChatScreen> {
   Future<void> _toggleRecording() async {
     if (_isRecording) {
       final audioPath = await _whisperService.stopRecording();
+      debugPrint('Audio path: $audioPath');
       if (audioPath != null) {
         setState(() {
           _isRecording = false;
@@ -140,8 +154,10 @@ class ChatScreenState extends State<ChatScreen> {
         });
 
         try {
+          debugPrint('Starting transcription for $audioPath');
           final transcription =
               await _whisperService.transcribeFromFile(audioPath);
+          debugPrint('Transcription result: "$transcription"');
           if (transcription.isNotEmpty) {
             if (mounted) {
               await _sendMessage(transcription);
@@ -241,7 +257,7 @@ class ChatScreenState extends State<ChatScreen> {
 
     return Scaffold(
       appBar: AppBar(
-        title: const Text('🤖 AI Chatbot'),
+        title: const Text('🤖 PrivAI'),
       ),
       body: Column(
         children: [
@@ -251,40 +267,63 @@ class ChatScreenState extends State<ChatScreen> {
               itemCount: _messages.length,
               itemBuilder: (context, index) {
                 final message = _messages[index];
-                final isRecordingOrTranscribing = message['role'] == 'system' &&
+                final isUser = message['role'] == 'user';
+                final isAi = message['role'] == 'ai';
+                final isSystem = message['role'] == 'system';
+                final isRecordingOrTranscribing = isSystem &&
                     (message['text'] == '🎤 Recording... Speak now!' ||
                         message['text'] == '🔍 Transcribing...');
-                return ListTile(
-                  title: isRecordingOrTranscribing
-                      ? Row(
-                          children: [
-                            const CircularProgressIndicator(strokeWidth: 2),
-                            const SizedBox(width: 8),
-                            const Text(
-                              'System',
+                return Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+                  child: Align(
+                    alignment: isUser || (isSystem && isRecordingOrTranscribing)
+                        ? Alignment.centerRight
+                        : isAi
+                            ? Alignment.centerLeft
+                            : Alignment.center,
+                    child: Container(
+                      constraints: BoxConstraints(
+                          maxWidth: MediaQuery.of(context).size.width * 0.7),
+                      padding: const EdgeInsets.all(12),
+                      decoration: BoxDecoration(
+                        color: isUser
+                            ? Colors.blue
+                            : isAi
+                                ? Colors.grey[300]
+                                : Colors.orange[100],
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: isRecordingOrTranscribing
+                          ? Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                SizedBox(
+                                  width: 12,
+                                  height: 12,
+                                  child: const CircularProgressIndicator(
+                                      strokeWidth: 1.5),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    message['text']!,
+                                    style: TextStyle(
+                                      color:
+                                          isUser ? Colors.white : Colors.black,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            )
+                          : Text(
+                              message['text']!,
                               style: TextStyle(
-                                fontWeight: FontWeight.bold,
-                                color: Colors.orange,
+                                color: isUser ? Colors.white : Colors.black,
                               ),
                             ),
-                          ],
-                        )
-                      : Text(
-                          message['role'] == 'user'
-                              ? 'You'
-                              : message['role'] == 'ai'
-                                  ? 'PrivAI'
-                                  : 'System',
-                          style: TextStyle(
-                            fontWeight: FontWeight.bold,
-                            color: message['role'] == 'user'
-                                ? Colors.blue
-                                : message['role'] == 'ai'
-                                    ? Colors.green
-                                    : Colors.orange,
-                          ),
-                        ),
-                  subtitle: Text(message['text']!),
+                    ),
+                  ),
                 );
               },
             ),

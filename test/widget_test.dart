@@ -3,13 +3,13 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:privai/main.dart';
 
 void main() {
-  group('AI Chatbot App Tests', () {
+  group('PrivAI App Tests', () {
     testWidgets('App displays ChatScreen immediately',
         (WidgetTester tester) async {
       await tester.pumpWidget(const MyApp());
 
       // App should display ChatScreen immediately (no loading state)
-      expect(find.text('AI Chatbot'), findsOneWidget);
+      expect(find.text('PrivAI'), findsOneWidget);
       expect(find.byType(TextField), findsOneWidget);
       expect(find.byIcon(Icons.send), findsOneWidget);
       expect(find.byIcon(Icons.mic), findsOneWidget);
@@ -55,7 +55,7 @@ void main() {
     testWidgets('App bar displays correct title', (WidgetTester tester) async {
       await tester.pumpWidget(const MyApp());
 
-      expect(find.text('AI Chatbot'), findsOneWidget);
+      expect(find.text('PrivAI'), findsOneWidget);
     });
 
     testWidgets(

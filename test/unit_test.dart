@@ -83,7 +83,7 @@ void main() {
       await tester.pumpWidget(const MyApp());
       await tester.pumpAndSettle(const Duration(seconds: 5));
 
-      expect(find.text('AI Chatbot'), findsOneWidget);
+      expect(find.text('PrivAI'), findsOneWidget);
       expect(find.byType(TextField), findsOneWidget);
     });
 

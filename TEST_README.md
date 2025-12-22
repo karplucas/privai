@@ -1,6 +1,6 @@
-# AI Chatbot Testing Documentation
+# PrivAI Testing Documentation
 
-This document describes the comprehensive testing suite for the AI Chatbot Flutter application.
+This document describes the comprehensive testing suite for the PrivAI Flutter application.
 
 ## Test Structure
 
