@@ -17,6 +17,9 @@ dependencies:
   audioplayers: ^5.2.1
   record: ^6.0.0
   kokoro_tts_flutter: ^0.2.1-exp
+  http: ^1.1.0
+  flutter_secure_storage: ^9.0.0
+  flutter_web_auth_2: ^4.1.0
 
 dev_dependencies:
   flutter_test:
@@ -36,4 +39,4 @@ flutter:
     - assets/tokenizer_vocab.json
     - assets/us_gold.json
     - assets/us_silver.json
-    - assets/models/
+    - assets/models_list.json

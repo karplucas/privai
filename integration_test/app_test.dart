@@ -15,7 +15,7 @@ void main() {
       await tester.pumpAndSettle(const Duration(seconds: 10));
 
       // Verify initial state
-      expect(find.text('AI Chatbot'), findsOneWidget);
+      expect(find.text('PrivAI'), findsOneWidget);
       expect(find.byType(TextField), findsOneWidget);
       expect(find.byIcon(Icons.send), findsOneWidget);
       expect(find.byIcon(Icons.mic), findsOneWidget);

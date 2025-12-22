@@ -1,10 +1,14 @@
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'services/whisper_service.dart';
 import 'services/kokoro_tts_service.dart';
+import 'models_page.dart';
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Initialize the plugin structure
   await FlutterGemma.initialize();
   runApp(const MyApp());
 }
@@ -15,9 +19,11 @@ class MyApp extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'AI Chatbot',
+      title: 'PrivAI',
+      debugShowCheckedModeBanner: false,
       theme: ThemeData(
         primarySwatch: Colors.blue,
+        useMaterial3: true,
       ),
       home: const ChatScreen(),
     );
@@ -34,64 +40,155 @@ class ChatScreen extends StatefulWidget {
 class ChatScreenState extends State<ChatScreen> {
   final List<Map<String, String>> _messages = [];
   final TextEditingController _textController = TextEditingController();
-  final bool _isLoading = false;
+  final ScrollController _scrollController = ScrollController();
+
   InferenceModel? _inferenceModel;
   InferenceChat? _chat;
+
   bool _isRecording = false;
   bool _isTranscribing = false;
+  bool _isProcessing = false;
+  bool _isModelLoading = false;
+
   final WhisperService _whisperService = WhisperService.instance;
   final KokoroTtsService _kokoroService = KokoroTtsService();
 
   @override
   void initState() {
     super.initState();
-    initializeChat();
-    // Initialize services in background
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _whisperService.initialize();
-      _kokoroService.initialize();
-    });
+    // Start the chain reaction of initialization
+    _startFullInitialization();
   }
 
+  Future<void> _startFullInitialization() async {
+    await initializeChat();
+
+    await Future.delayed(const Duration(milliseconds: 500));
+
+    // 3. Initialize Whisper
+    try {
+      debugPrint('Initializing Whisper...');
+      await _whisperService.initialize();
+      debugPrint('Whisper ready.');
+    } catch (e) {
+      debugPrint('Whisper init failed: $e');
+    }
+
+    // 4. Initialize Kokoro
+    try {
+      debugPrint('Initializing Kokoro...');
+      await _kokoroService.initialize();
+      debugPrint('Kokoro ready.');
+    } catch (e) {
+      debugPrint('Kokoro init failed: $e');
+    }
+  }
+
+  Future<String?> _getSelectedLlmFilename() async {
+    const storage = FlutterSecureStorage();
+    return await storage.read(key: 'selected_llm_model');
+  }
+
+  /// Sets up the Gemma model with a 4096 context window
   Future<void> initializeChat() async {
+    if (_isModelLoading) return;
+    setState(() => _isModelLoading = true);
+
     try {
       debugPrint('Starting model initialization...');
+      final selectedFilename =
+          await _getSelectedLlmFilename() ?? 'gemma-3n-E2B-it-int4.task';
 
-      await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
-          .fromBundled('Gemma3-1B-IT_multi-prefill-seq_q4_ekv2048.task')
-          .install();
+      // Standard app-specific directory for model files
+      final dir =
+          Directory('/sdcard/Android/data/com.LucasKarpinski.privai/files');
+      if (!await dir.exists()) await dir.create(recursive: true);
 
-      debugPrint('Model installation completed');
+      final modelPath = '${dir.path}/$selectedFilename';
+      final file = File(modelPath);
 
-      _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 2048);
-      debugPrint('Active model retrieved: ${_inferenceModel != null}');
+      if (await file.exists()) {
+        // 1. Install model into the native Gemma engine
+        await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
+            .fromFile(modelPath)
+            .install();
 
-      _chat = await _inferenceModel!.createChat();
-      debugPrint('Chat session created: ${_chat != null}');
+        // 2. Load model with 4096 tokens (increased from 512 to prevent frequent crashes)
+        _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 4096);
+
+        if (_inferenceModel != null) {
+          // 3. Create a single persistent chat session
+          _chat = await _inferenceModel!.createChat();
+          debugPrint('Gemma ready. Context: 4096 tokens.');
+        }
+      } else {
+        _showErrorSnackBar('Model not found. Please download it in Settings.');
+      }
     } catch (e) {
-      debugPrint('Error initializing chat: $e');
+      debugPrint('Initialization Error: $e');
+    } finally {
+      if (mounted) setState(() => _isModelLoading = false);
     }
   }
 
+  /// Handles sending the message and getting AI response
   Future<void> _sendMessage(String text) async {
-    if (text.isEmpty) return;
+    if (text.trim().isEmpty || _isProcessing || _chat == null) return;
 
-    setState(() {
-      _messages.add({'role': 'user', 'text': text});
-    });
+    final userText = text.trim();
     _textController.clear();
 
-    String response = await _getAIResponse(text);
-
     setState(() {
-      _messages.add({'role': 'ai', 'text': response});
+      _messages.add({'role': 'user', 'text': userText});
+      _isProcessing = true;
     });
+    _scrollToBottom();
 
-    try {
-      await _kokoroService.speak(response);
-    } catch (e) {
-      debugPrint('TTS Error: $e');
+    String response = await _getAIResponse(userText);
+
+    if (mounted) {
+      setState(() {
+        _messages.add({'role': 'ai', 'text': response});
+        _isProcessing = false;
+      });
+      _scrollToBottom();
     }
+  }
+
+  /// Core inference logic with crash-protection for context overflow
+  Future<String> _getAIResponse(String input) async {
+    try {
+      final userMessage = Message(text: input, isUser: true);
+
+      // Send to native engine
+      await _chat!.addQueryChunk(userMessage);
+      final response = await _chat!.generateChatResponse();
+
+      if (response is TextResponse) {
+        return response.token;
+      }
+      return 'I encountered an unexpected response format.';
+    } catch (e) {
+      debugPrint('Inference Error (Likely Context Full): $e');
+
+      // CRITICAL: If the native engine throws an OUT_OF_RANGE error,
+      // we must reset the chat session or the app will abort.
+      _chat = await _inferenceModel?.createChat();
+
+      return '⚠️ My memory limit was reached, so I had to clear our history. What were we talking about?';
+    }
+  }
+
+  void _scrollToBottom() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_scrollController.hasClients) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    });
   }
 
   Future<void> _toggleRecording() async {
@@ -101,158 +198,183 @@ class ChatScreenState extends State<ChatScreen> {
         setState(() {
           _isRecording = false;
           _isTranscribing = true;
+          _messages.add({'role': 'system', 'text': '🔍 Transcribing...'});
         });
+        _scrollToBottom();
 
         try {
           final transcription =
               await _whisperService.transcribeFromFile(audioPath);
-          if (transcription.isNotEmpty) {
-            await _sendMessage(transcription);
-          } else {
-            _showErrorSnackBar(
-                '🎤 No speech detected. Please speak clearly and try again.');
+          if (mounted) {
+            setState(() =>
+                _messages.removeLast()); // Remove transcription placeholder
+            if (transcription.isNotEmpty) {
+              await _sendMessage(transcription);
+            }
           }
         } catch (e) {
-          _showErrorSnackBar('⚠️ Transcription failed: $e');
+          _showErrorSnackBar('Transcription failed: $e');
         } finally {
-          setState(() {
-            _isTranscribing = false;
-          });
+          if (mounted) setState(() => _isTranscribing = false);
         }
       }
     } else {
       try {
         await _whisperService.startRecording();
-        setState(() {
-          _isRecording = true;
-        });
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('🎤 Recording... Speak now!')),
-          );
-        }
+        setState(() => _isRecording = true);
       } catch (e) {
-        _showErrorSnackBar('⚠️ Failed to start recording: $e');
+        _showErrorSnackBar('Check microphone permissions.');
       }
     }
   }
 
   void _showErrorSnackBar(String message) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message)),
-    );
-  }
-
-  Future<String> _getAIResponse(String input) async {
-    if (_chat == null) {
-      return 'Model not initialized. Please wait...';
-    }
-
-    try {
-      final userMessage = Message(text: input, isUser: true);
-      await _chat!.addQuery(userMessage);
-      final response = await _chat!.generateChatResponse();
-      if (response is TextResponse) {
-        return response.token;
-      } else {
-        return 'Function call response';
-      }
-    } catch (e) {
-      return 'Error: $e';
-    }
+    ScaffoldMessenger.of(context)
+        .showSnackBar(SnackBar(content: Text(message)));
   }
 
   @override
   void dispose() {
     _textController.dispose();
+    _scrollController.dispose();
     _whisperService.dispose();
     _kokoroService.dispose();
+
+    // Release native resources
+    _chat = null;
+    _inferenceModel = null;
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(
-        body: Center(
-          child: CircularProgressIndicator(),
-        ),
-      );
-    }
-
     return Scaffold(
       appBar: AppBar(
-        title: Text(_isTranscribing ? '🔍 Transcribing...' : '🤖 AI Chatbot'),
-        backgroundColor: _isTranscribing ? Colors.orange[100] : null,
+        title: const Text('🤖 PrivAI'),
+        centerTitle: true,
+        elevation: 2,
+      ),
+      drawer: Drawer(
+        child: ListView(
+          padding: EdgeInsets.zero,
+          children: [
+            const DrawerHeader(
+              decoration: BoxDecoration(color: Colors.blue),
+              child: Text('PrivAI',
+                  style: TextStyle(color: Colors.white, fontSize: 24)),
+            ),
+            ListTile(
+              leading: const Icon(Icons.chat),
+              title: const Text('New Chat'),
+              onTap: () async {
+                _chat = await _inferenceModel?.createChat();
+                setState(() => _messages.clear());
+                Navigator.pop(context);
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings),
+              title: const Text('Manage Models'),
+              onTap: () {
+                Navigator.pop(context);
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const ModelsPage()));
+              },
+            ),
+          ],
+        ),
       ),
       body: Column(
         children: [
+          if (_isModelLoading) const LinearProgressIndicator(),
           Expanded(
             child: ListView.builder(
+              controller: _scrollController,
+              padding: const EdgeInsets.all(10),
               itemCount: _messages.length,
               itemBuilder: (context, index) {
                 final message = _messages[index];
-                return ListTile(
-                  title: Text(
-                    message['role'] == 'user' ? 'You' : 'AI',
-                    style: TextStyle(
-                      fontWeight: FontWeight.bold,
-                      color: message['role'] == 'user'
-                          ? Colors.blue
-                          : Colors.green,
+                final isUser = message['role'] == 'user';
+                final isSystem = message['role'] == 'system';
+
+                return Align(
+                  alignment: isUser
+                      ? Alignment.centerRight
+                      : (isSystem ? Alignment.center : Alignment.centerLeft),
+                  child: Container(
+                    margin: const EdgeInsets.symmetric(vertical: 5),
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 14, vertical: 10),
+                    decoration: BoxDecoration(
+                      color: isUser
+                          ? Colors.blue[600]
+                          : (isSystem ? Colors.amber[100] : Colors.grey[200]),
+                      borderRadius: BorderRadius.only(
+                        topLeft: const Radius.circular(15),
+                        topRight: const Radius.circular(15),
+                        bottomLeft:
+                            isUser ? const Radius.circular(15) : Radius.zero,
+                        bottomRight:
+                            isUser ? Radius.zero : const Radius.circular(15),
+                      ),
+                    ),
+                    child: Text(
+                      message['text']!,
+                      style: TextStyle(
+                          color: isUser ? Colors.white : Colors.black87),
                     ),
                   ),
-                  subtitle: Text(message['text']!),
                 );
               },
             ),
           ),
-          Container(
-            padding: const EdgeInsets.all(16.0),
-            decoration: BoxDecoration(
-              color: Colors.grey[100],
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.grey.withValues(alpha: 0.3),
-                  spreadRadius: 1,
-                  blurRadius: 3,
-                  offset: const Offset(0, -1),
-                ),
-              ],
+          if (_isProcessing)
+            const Padding(
+              padding: EdgeInsets.all(8.0),
+              child: Text("PrivAI is thinking...",
+                  style: TextStyle(
+                      fontStyle: FontStyle.italic, color: Colors.grey)),
             ),
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+            color: Colors.white,
             child: Row(
               children: [
-                IconButton(
-                  icon: _isTranscribing
-                      ? const SizedBox(
-                          width: 24,
-                          height: 24,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : Icon(
-                          _isRecording ? Icons.stop : Icons.mic,
-                          color: _isRecording ? Colors.red : Colors.blue,
-                        ),
-                  onPressed: _isTranscribing ? null : _toggleRecording,
-                ),
                 Expanded(
                   child: TextField(
                     controller: _textController,
-                    decoration: const InputDecoration(
-                      hintText: 'Type a message or tap microphone...',
-                      border: OutlineInputBorder(),
+                    enabled: !_isProcessing && !_isTranscribing,
+                    // RESTORES ENTER KEY FUNCTIONALITY
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: (val) => _sendMessage(val),
+                    decoration: InputDecoration(
+                      hintText: 'Type a message...',
+                      filled: true,
+                      fillColor: Colors.grey[100],
+                      border: OutlineInputBorder(
+                          borderRadius: BorderRadius.circular(25),
+                          borderSide: BorderSide.none),
                       contentPadding:
-                          EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                          const EdgeInsets.symmetric(horizontal: 20),
+                      suffixIcon: IconButton(
+                        icon: Icon(_isRecording ? Icons.stop : Icons.mic,
+                            color: _isRecording ? Colors.red : Colors.blue),
+                        onPressed: _isTranscribing ? null : _toggleRecording,
+                      ),
                     ),
-                    onSubmitted: _sendMessage,
-                    enabled: !_isTranscribing,
                   ),
                 ),
-                IconButton(
-                  icon: const Icon(Icons.send),
-                  onPressed: _isTranscribing
-                      ? null
-                      : () => _sendMessage(_textController.text),
+                const SizedBox(width: 8),
+                CircleAvatar(
+                  backgroundColor: Colors.blue,
+                  child: IconButton(
+                    icon: const Icon(Icons.send, color: Colors.white),
+                    onPressed: (_isProcessing || _isTranscribing)
+                        ? null
+                        : () => _sendMessage(_textController.text),
+                  ),
                 ),
               ],
             ),

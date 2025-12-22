@@ -1,0 +1,26 @@
+{
+  "llm": [
+    {
+      "name": "Gemma3-1B-IT Model",
+      "url": "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm?download=true",
+      "filename": "Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm"
+    },
+    {
+      "name": "Gemma-3n-E2B Model",
+      "url": "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task?download=true",
+      "filename": "gemma-3n-E2B-it-int4.task"
+    }
+  ],
+  "tts": [
+    {
+      "name": "Whisper Small Q5_1 Model",
+      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin?download=true",
+      "filename": "ggml-small-q5_1.bin"
+    },
+    {
+      "name": "Whisper Large V3 Turbo Q5_0 Model",
+      "url": "https://huggingface.co/AI-Engine/Whisper-Q5-GGML/resolve/main/whisper-ggml-large-v3-turbo-q5_0.bin?download=true",
+      "filename": "ggml-large-v3-turbo-q5_0.bin"
+    }
+  ]
+}
