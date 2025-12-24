@@ -89,6 +89,12 @@ class ChatScreenState extends State<ChatScreen> {
     return await storage.read(key: 'selected_llm_model');
   }
 
+  Future<String> _getSelectedPrompt() async {
+    const storage = FlutterSecureStorage();
+    return await storage.read(key: 'selected_prompt') ??
+        'Try to keep your responses shorter, under 100 words.';
+  }
+
   /// Sets up the Gemma model with a 4096 context window
   Future<void> initializeChat() async {
     if (_isModelLoading) return;
@@ -119,6 +125,12 @@ class ChatScreenState extends State<ChatScreen> {
         if (_inferenceModel != null) {
           // 3. Create a single persistent chat session
           _chat = await _inferenceModel!.createChat();
+
+          // 4. Add initial system prompt
+          final prompt = await _getSelectedPrompt();
+          final systemMessage = Message(text: prompt, isUser: false);
+          await _chat!.addQueryChunk(systemMessage);
+
           debugPrint('Gemma ready. Context: 4096 tokens.');
         }
       } else {
@@ -268,6 +280,11 @@ class ChatScreenState extends State<ChatScreen> {
               title: const Text('New Chat'),
               onTap: () async {
                 _chat = await _inferenceModel?.createChat();
+                if (_chat != null) {
+                  final prompt = await _getSelectedPrompt();
+                  final systemMessage = Message(text: prompt, isUser: false);
+                  await _chat!.addQueryChunk(systemMessage);
+                }
                 setState(() => _messages.clear());
                 Navigator.pop(context);
               },
