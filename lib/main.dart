@@ -52,6 +52,7 @@ class ChatScreenState extends State<ChatScreen> {
   bool _isModelLoading = false;
   bool _ttsEnabled = true;
   bool _sttEnabled = true;
+  Conversation? _currentConversation;
 
   final WhisperService _whisperService = WhisperService.instance;
   final KokoroTtsService _kokoroService = KokoroTtsService();
@@ -67,6 +68,7 @@ class ChatScreenState extends State<ChatScreen> {
 
   Future<void> _startFullInitialization() async {
     await initializeChat();
+    await _loadConversation();
 
     await Future.delayed(const Duration(milliseconds: 500));
 
@@ -112,6 +114,98 @@ class ChatScreenState extends State<ChatScreen> {
     setState(() {
       _ttsEnabled = tts == 'true';
       _sttEnabled = stt == 'true';
+    });
+  }
+
+  Future<void> _loadConversation() async {
+    debugPrint('Loading current conversation...');
+    _currentConversation = await _conversationService.getCurrentConversation();
+
+    if (_currentConversation != null) {
+      debugPrint(
+          'Loaded conversation ${_currentConversation!.id} with ${_currentConversation!.messages.length} messages');
+      setState(() {
+        _messages.clear();
+        _messages.addAll(_currentConversation!.messages);
+      });
+    } else {
+      // Create a new conversation if none exists
+      debugPrint('No current conversation, creating new one');
+      _currentConversation = await _conversationService.createNewConversation();
+    }
+  }
+
+  Future<void> _saveCurrentConversation() async {
+    if (_currentConversation != null) {
+      debugPrint(
+          'Saving conversation ${_currentConversation!.id} with ${_messages.length} messages');
+      await _conversationService.updateConversationMessages(
+        _currentConversation!.id,
+        _messages,
+      );
+      _currentConversation = _currentConversation!.copyWith(
+        messages: List.from(_messages),
+        updatedAt: DateTime.now(),
+      );
+    } else {
+      debugPrint('No current conversation to save');
+    }
+  }
+
+  Future<void> _startNewConversation() async {
+    // Save current conversation if it has messages
+    if (_currentConversation != null && _messages.isNotEmpty) {
+      await _saveCurrentConversation();
+    }
+
+    // Create new conversation
+    _currentConversation = await _conversationService.createNewConversation();
+
+    // Clear messages and reset chat
+    _chat = await _inferenceModel?.createChat();
+    if (_chat != null) {
+      final prompt = await _getSelectedPrompt();
+      final systemMessage = Message(text: prompt, isUser: false);
+      await _chat!.addQueryChunk(systemMessage);
+    }
+
+    setState(() {
+      _messages.clear();
+    });
+  }
+
+  Future<void> _loadConversationById(String conversationId) async {
+    // Save current conversation if it has messages
+    if (_currentConversation != null && _messages.isNotEmpty) {
+      await _saveCurrentConversation();
+    }
+
+    // Load the selected conversation
+    final conversations = await _conversationService.getConversations();
+    _currentConversation =
+        conversations.firstWhere((c) => c.id == conversationId);
+
+    // Set as current
+    await _conversationService.setCurrentConversation(conversationId);
+
+    // Reset chat and load messages
+    _chat = await _inferenceModel?.createChat();
+    if (_chat != null) {
+      final prompt = await _getSelectedPrompt();
+      final systemMessage = Message(text: prompt, isUser: false);
+      await _chat!.addQueryChunk(systemMessage);
+
+      // Add existing messages to chat context
+      for (final message in _currentConversation!.messages) {
+        final isUser = message['role'] == 'user';
+        final msg = Message(text: message['text']!, isUser: isUser);
+        await _chat!.addQueryChunk(msg);
+      }
+    }
+
+    setState(() {
+      _messages.clear();
+      _messages.addAll(_currentConversation!.messages);
     });
   }
 
@@ -193,6 +287,9 @@ class ChatScreenState extends State<ChatScreen> {
           debugPrint('TTS failed: $e');
         }
       }
+
+      // Save conversation after each exchange
+      await _saveCurrentConversation();
     }
   }
 
@@ -276,6 +373,7 @@ class ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    _saveCurrentConversation(); // Save before disposing
     _textController.dispose();
     _scrollController.dispose();
     _whisperService.dispose();
@@ -296,8 +394,7 @@ class ChatScreenState extends State<ChatScreen> {
         elevation: 2,
       ),
       drawer: Drawer(
-        child: ListView(
-          padding: EdgeInsets.zero,
+        child: Column(
           children: [
             const DrawerHeader(
               decoration: BoxDecoration(color: Colors.blue),
@@ -308,16 +405,99 @@ class ChatScreenState extends State<ChatScreen> {
               leading: const Icon(Icons.chat),
               title: const Text('New Chat'),
               onTap: () async {
-                _chat = await _inferenceModel?.createChat();
-                if (_chat != null) {
-                  final prompt = await _getSelectedPrompt();
-                  final systemMessage = Message(text: prompt, isUser: false);
-                  await _chat!.addQueryChunk(systemMessage);
-                }
-                setState(() => _messages.clear());
+                await _startNewConversation();
                 Navigator.pop(context);
               },
             ),
+            const Divider(),
+            Expanded(
+              child: FutureBuilder<List<Conversation>>(
+                future: _conversationService.getConversations(),
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState == ConnectionState.waiting) {
+                    return const Center(child: CircularProgressIndicator());
+                  }
+
+                  final conversations = snapshot.data ?? [];
+
+                  if (conversations.isEmpty) {
+                    return const Center(
+                      child: Text('No conversations yet'),
+                    );
+                  }
+
+                  return ListView.builder(
+                    itemCount: conversations.length,
+                    itemBuilder: (context, index) {
+                      final conversation = conversations[index];
+                      final isCurrent =
+                          _currentConversation?.id == conversation.id;
+
+                      return ListTile(
+                        leading: const Icon(Icons.history),
+                        title: Text(
+                          conversation.title,
+                          style: TextStyle(
+                            fontWeight:
+                                isCurrent ? FontWeight.bold : FontWeight.normal,
+                          ),
+                        ),
+                        subtitle: Text(
+                          _conversationService
+                              .formatDate(conversation.updatedAt),
+                        ),
+                        trailing: isCurrent
+                            ? const Icon(Icons.check, color: Colors.blue)
+                            : IconButton(
+                                icon: const Icon(Icons.delete_outline),
+                                onPressed: () async {
+                                  final shouldDelete = await showDialog<bool>(
+                                    context: context,
+                                    builder: (context) => AlertDialog(
+                                      title: const Text('Delete Conversation'),
+                                      content: const Text(
+                                          'Are you sure you want to delete this conversation?'),
+                                      actions: [
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(context, false),
+                                          child: const Text('Cancel'),
+                                        ),
+                                        TextButton(
+                                          onPressed: () =>
+                                              Navigator.pop(context, true),
+                                          child: const Text('Delete'),
+                                        ),
+                                      ],
+                                    ),
+                                  );
+
+                                  if (shouldDelete == true) {
+                                    await _conversationService
+                                        .deleteConversation(conversation.id);
+
+                                    // If deleted conversation was current, start new one
+                                    if (_currentConversation?.id ==
+                                        conversation.id) {
+                                      await _startNewConversation();
+                                    }
+
+                                    setState(() {}); // Refresh drawer
+                                  }
+                                },
+                              ),
+                        onTap: () async {
+                          await _loadConversationById(conversation.id);
+                          Navigator.pop(context);
+                        },
+                        selected: isCurrent,
+                      );
+                    },
+                  );
+                },
+              ),
+            ),
+            const Divider(),
             ListTile(
               leading: const Icon(Icons.settings),
               title: const Text('Manage Models'),

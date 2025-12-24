@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:intl/intl.dart';
 
@@ -28,13 +29,48 @@ class Conversation {
   }
 
   factory Conversation.fromJson(Map<String, dynamic> json) {
-    return Conversation(
-      id: json['id'],
-      title: json['title'],
-      messages: List<Map<String, String>>.from(json['messages']),
-      createdAt: DateTime.parse(json['createdAt']),
-      updatedAt: DateTime.parse(json['updatedAt']),
-    );
+    try {
+      final id = json['id']?.toString() ?? '';
+      final title = json['title']?.toString() ?? 'New Chat';
+      final createdAtStr =
+          json['createdAt']?.toString() ?? DateTime.now().toIso8601String();
+      final updatedAtStr =
+          json['updatedAt']?.toString() ?? DateTime.now().toIso8601String();
+
+      List<Map<String, String>> messages = [];
+      if (json['messages'] is List) {
+        messages = (json['messages'] as List)
+            .map((msg) {
+              if (msg is Map<String, dynamic>) {
+                return {
+                  'role': msg['role']?.toString() ?? 'user',
+                  'text': msg['text']?.toString() ?? '',
+                };
+              }
+              return {'role': 'user', 'text': msg.toString()};
+            })
+            .cast<Map<String, String>>()
+            .toList();
+      }
+
+      return Conversation(
+        id: id,
+        title: title,
+        messages: messages,
+        createdAt: DateTime.parse(createdAtStr),
+        updatedAt: DateTime.parse(updatedAtStr),
+      );
+    } catch (e) {
+      debugPrint('Error parsing conversation from JSON: $e, data: $json');
+      // Return a default conversation if parsing fails
+      return Conversation(
+        id: DateTime.now().millisecondsSinceEpoch.toString(),
+        title: 'Recovered Chat',
+        messages: [],
+        createdAt: DateTime.now(),
+        updatedAt: DateTime.now(),
+      );
+    }
   }
 
   Conversation copyWith({
@@ -66,12 +102,32 @@ class ConversationService {
   Future<List<Conversation>> getConversations() async {
     try {
       final conversationsJson = await _storage.read(key: _conversationsKey);
-      if (conversationsJson == null) return [];
+      if (conversationsJson == null) {
+        debugPrint('No conversations found in storage');
+        return [];
+      }
 
       final List<dynamic> jsonList = json.decode(conversationsJson);
-      return jsonList.map((json) => Conversation.fromJson(json)).toList()
-        ..sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+      final conversations = <Conversation>[];
+
+      for (final jsonItem in jsonList) {
+        try {
+          if (jsonItem is Map<String, dynamic>) {
+            conversations.add(Conversation.fromJson(jsonItem));
+          } else {
+            debugPrint('Invalid conversation format: $jsonItem');
+          }
+        } catch (e) {
+          debugPrint('Error parsing conversation: $e, data: $jsonItem');
+        }
+      }
+
+      conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+
+      debugPrint('Loaded ${conversations.length} conversations from storage');
+      return conversations;
     } catch (e) {
+      debugPrint('Error loading conversations: $e');
       return [];
     }
   }
@@ -89,20 +145,36 @@ class ConversationService {
   }
 
   Future<void> saveConversation(Conversation conversation) async {
+    debugPrint(
+        'Saving conversation ${conversation.id} with ${conversation.messages.length} messages');
     final conversations = await getConversations();
 
     final existingIndex =
         conversations.indexWhere((c) => c.id == conversation.id);
     if (existingIndex >= 0) {
       conversations[existingIndex] = conversation;
+      debugPrint('Updated existing conversation ${conversation.id}');
     } else {
       conversations.add(conversation);
+      debugPrint('Added new conversation ${conversation.id}');
+    }
+
+    final jsonData = conversations.map((c) => c.toJson()).toList();
+    final jsonString = json.encode(jsonData);
+
+    // Validate the JSON before saving
+    try {
+      final decoded = json.decode(jsonString) as List;
+      debugPrint('JSON validation passed: ${decoded.length} conversations');
+    } catch (e) {
+      debugPrint('JSON validation failed: $e');
     }
 
     await _storage.write(
       key: _conversationsKey,
-      value: json.encode(conversations.map((c) => c.toJson()).toList()),
+      value: jsonString,
     );
+    debugPrint('Saved ${conversations.length} conversations to storage');
   }
 
   Future<void> setCurrentConversation(String conversationId) async {
@@ -122,13 +194,17 @@ class ConversationService {
       updatedAt: now,
     );
 
+    debugPrint('Creating new conversation $id');
     await saveConversation(conversation);
     await setCurrentConversation(id);
+    debugPrint('Created and saved new conversation $id');
     return conversation;
   }
 
   Future<void> updateConversationMessages(
       String conversationId, List<Map<String, String>> messages) async {
+    debugPrint(
+        'Updating conversation $conversationId with ${messages.length} messages');
     final conversations = await getConversations();
     final index = conversations.indexWhere((c) => c.id == conversationId);
 
@@ -145,6 +221,20 @@ class ConversationService {
         key: _conversationsKey,
         value: json.encode(conversations.map((c) => c.toJson()).toList()),
       );
+      debugPrint('Successfully updated conversation $conversationId');
+    } else {
+      debugPrint(
+          'Conversation $conversationId not found in storage, creating it');
+      // If conversation doesn't exist, create it
+      final now = DateTime.now();
+      final newConversation = Conversation(
+        id: conversationId,
+        title: _generateTitle(messages),
+        messages: messages,
+        createdAt: now,
+        updatedAt: now,
+      );
+      await saveConversation(newConversation);
     }
   }
 
