@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-// import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
@@ -17,19 +17,26 @@ class ModelsPage extends StatefulWidget {
 }
 
 class _ModelsPageState extends State<ModelsPage> {
-  // final FlutterSecureStorage _storage = const FlutterSecureStorage();
+  final FlutterSecureStorage _storage = const FlutterSecureStorage();
   String? _token;
   bool _isDownloading = false;
   Map<String, List<Map<String, dynamic>>> _modelCategories = {};
   String? _selectedLlmFilename;
   String? _selectedTtsFilename;
+  late TextEditingController _promptController;
+  bool _ttsEnabled = true;
+  bool _sttEnabled = true;
 
   @override
   void initState() {
     super.initState();
+    _promptController = TextEditingController();
     _loadToken();
     _loadSelectedLlm();
     _loadSelectedTts();
+    _loadSelectedPrompt();
+    _loadTtsEnabled();
+    _loadSttEnabled();
     _loadModels();
   }
 
@@ -40,14 +47,43 @@ class _ModelsPageState extends State<ModelsPage> {
   }
 
   Future<void> _loadSelectedLlm() async {
-    // _selectedLlmFilename = await _storage.read(key: 'selected_llm_model');
-    _selectedLlmFilename = null;
+    _selectedLlmFilename = await _storage.read(key: 'selected_llm_model');
     setState(() {});
   }
 
   Future<void> _loadSelectedTts() async {
-    // _selectedTtsFilename = await _storage.read(key: 'selected_tts_model');
-    _selectedTtsFilename = null;
+    _selectedTtsFilename = await _storage.read(key: 'selected_tts_model');
+    setState(() {});
+  }
+
+  Future<void> _loadSelectedPrompt() async {
+    final prompt = await _storage.read(key: 'selected_prompt') ??
+        'Try to keep your responses shorter, about 50 - 100 words.';
+    _promptController.text = prompt;
+    setState(() {});
+  }
+
+  Future<void> _loadTtsEnabled() async {
+    final enabled = await _storage.read(key: 'tts_enabled');
+    _ttsEnabled = enabled == 'true';
+    setState(() {});
+  }
+
+  Future<void> _loadSttEnabled() async {
+    final enabled = await _storage.read(key: 'stt_enabled');
+    _sttEnabled = enabled == 'true';
+    setState(() {});
+  }
+
+  Future<void> _saveTtsEnabled(bool enabled) async {
+    await _storage.write(key: 'tts_enabled', value: enabled.toString());
+    _ttsEnabled = enabled;
+    setState(() {});
+  }
+
+  Future<void> _saveSttEnabled(bool enabled) async {
+    await _storage.write(key: 'stt_enabled', value: enabled.toString());
+    _sttEnabled = enabled;
     setState(() {});
   }
 
@@ -176,83 +212,65 @@ class _ModelsPageState extends State<ModelsPage> {
       appBar: AppBar(
         title: const Text('Models'),
       ),
-      body: _token == null
-          ? Center(
-              child: ElevatedButton(
-                onPressed: _loginWithHF,
-                child: const Text('Login with Hugging Face'),
+      body: Column(
+        children: [
+          Padding(
+            padding: const EdgeInsets.all(16.0),
+            child: TextField(
+              controller: _promptController,
+              decoration: const InputDecoration(
+                labelText: 'Initial Prompt',
+                hintText: 'Enter the initial system prompt for the LLM',
               ),
-            )
-          : _modelCategories.isEmpty
-              ? const Center(child: CircularProgressIndicator())
-              : ListView(
-                  children: [
-                    for (var category in _modelCategories.keys) ...[
-                      Padding(
-                        padding: const EdgeInsets.all(8.0),
-                        child: Text(category.toUpperCase(),
-                            style: Theme.of(context).textTheme.headlineSmall),
-                      ),
-                      if (category == 'llm' &&
-                          _modelCategories[category]!.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                          child: DropdownButton<String>(
-                            value: _selectedLlmFilename,
-                            hint: const Text('Select LLM Model'),
-                            items: _modelCategories[category]!
-                                .map((model) => DropdownMenuItem<String>(
-                                      value: model['filename'] as String,
-                                      child: Text(model['name'] as String),
-                                    ))
-                                .toList(),
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedLlmFilename = value;
-                              });
-                              // _storage.write(
-                              //     key: 'selected_llm_model', value: value);
-                            },
-                          ),
-                        ),
-                      if (category == 'tts' &&
-                          _modelCategories[category]!.isNotEmpty)
-                        Padding(
-                          padding: const EdgeInsets.symmetric(horizontal: 16.0),
-                          child: DropdownButton<String>(
-                            value: _selectedTtsFilename,
-                            hint: const Text('Select TTS Model'),
-                            items: _modelCategories[category]!
-                                .map((model) => DropdownMenuItem<String>(
-                                      value: model['filename'] as String,
-                                      child: Text(model['name'] as String),
-                                    ))
-                                .toList(),
-                            onChanged: (value) {
-                              setState(() {
-                                _selectedTtsFilename = value;
-                              });
-                              // _storage.write(
-                              //     key: 'selected_tts_model', value: value);
-                            },
-                          ),
-                        ),
-                      ..._modelCategories[category]!.map((model) => Padding(
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 16.0, vertical: 4.0),
-                            child: ElevatedButton(
-                              onPressed: _isDownloading
-                                  ? null
-                                  : () => _downloadModel(model['url'] as String,
-                                      model['filename'] as String),
-                              child: _isDownloading
-                                  ? const CircularProgressIndicator()
-                                  : Text('Download ${model['name']}'),
-                            ),
-                          )),
-                    ],
-                  ],
+              maxLines: 3,
+              onChanged: (value) {
+                _storage.write(key: 'selected_prompt', value: value);
+              },
+            ),
+          ),
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Voice Settings',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  title: const Text('Text-to-Speech (TTS)'),
+                  subtitle: const Text('Enable AI voice responses'),
+                  value: _ttsEnabled,
+                  onChanged: (value) => _saveTtsEnabled(value),
+                  contentPadding: EdgeInsets.zero,
                 ),
+                SwitchListTile(
+                  title: const Text('Speech-to-Text (STT)'),
+                  subtitle: const Text('Enable voice input recording'),
+                  value: _sttEnabled,
+                  onChanged: (value) => _saveSttEnabled(value),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: _token == null
+                ? Center(
+                    child: ElevatedButton(
+                      onPressed: _loginWithHF,
+                      child: const Text('Login with Hugging Face'),
+                    ),
+                  )
+                : _modelCategories.isEmpty
+                    ? const Center(child: CircularProgressIndicator())
+                    : ListView(
+                        children: [],
+                      ),
+          ),
+        ],
+      ),
     );
   }
 }
