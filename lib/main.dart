@@ -4,6 +4,7 @@ import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'services/whisper_service.dart';
 import 'services/kokoro_tts_service.dart';
+import 'services/conversation_service.dart';
 import 'models_page.dart';
 
 void main() async {
@@ -49,14 +50,18 @@ class ChatScreenState extends State<ChatScreen> {
   bool _isTranscribing = false;
   bool _isProcessing = false;
   bool _isModelLoading = false;
+  bool _ttsEnabled = true;
+  bool _sttEnabled = true;
 
   final WhisperService _whisperService = WhisperService.instance;
   final KokoroTtsService _kokoroService = KokoroTtsService();
+  final ConversationService _conversationService = ConversationService();
 
   @override
   void initState() {
     super.initState();
-    // Start the chain reaction of initialization
+    // Load settings and start initialization
+    _loadSettings();
     _startFullInitialization();
   }
 
@@ -65,22 +70,26 @@ class ChatScreenState extends State<ChatScreen> {
 
     await Future.delayed(const Duration(milliseconds: 500));
 
-    // 3. Initialize Whisper
-    try {
-      debugPrint('Initializing Whisper...');
-      await _whisperService.initialize();
-      debugPrint('Whisper ready.');
-    } catch (e) {
-      debugPrint('Whisper init failed: $e');
+    // 3. Initialize Whisper (if enabled)
+    if (_sttEnabled) {
+      try {
+        debugPrint('Initializing Whisper...');
+        await _whisperService.initialize();
+        debugPrint('Whisper ready.');
+      } catch (e) {
+        debugPrint('Whisper init failed: $e');
+      }
     }
 
-    // 4. Initialize Kokoro
-    try {
-      debugPrint('Initializing Kokoro...');
-      await _kokoroService.initialize();
-      debugPrint('Kokoro ready.');
-    } catch (e) {
-      debugPrint('Kokoro init failed: $e');
+    // 4. Initialize Kokoro (if enabled)
+    if (_ttsEnabled) {
+      try {
+        debugPrint('Initializing Kokoro...');
+        await _kokoroService.initialize();
+        debugPrint('Kokoro ready.');
+      } catch (e) {
+        debugPrint('Kokoro init failed: $e');
+      }
     }
   }
 
@@ -93,6 +102,17 @@ class ChatScreenState extends State<ChatScreen> {
     const storage = FlutterSecureStorage();
     return await storage.read(key: 'selected_prompt') ??
         'Try to keep your responses shorter, under 100 words.';
+  }
+
+  Future<void> _loadSettings() async {
+    const storage = FlutterSecureStorage();
+    final tts = await storage.read(key: 'tts_enabled');
+    final stt = await storage.read(key: 'stt_enabled');
+
+    setState(() {
+      _ttsEnabled = tts == 'true';
+      _sttEnabled = stt == 'true';
+    });
   }
 
   /// Sets up the Gemma model with a 4096 context window
@@ -164,6 +184,15 @@ class ChatScreenState extends State<ChatScreen> {
         _isProcessing = false;
       });
       _scrollToBottom();
+
+      // Play TTS if enabled
+      if (_ttsEnabled && response.isNotEmpty) {
+        try {
+          await _kokoroService.speak(response);
+        } catch (e) {
+          debugPrint('TTS failed: $e');
+        }
+      }
     }
   }
 
@@ -375,11 +404,15 @@ class ChatScreenState extends State<ChatScreen> {
                           borderSide: BorderSide.none),
                       contentPadding:
                           const EdgeInsets.symmetric(horizontal: 20),
-                      suffixIcon: IconButton(
-                        icon: Icon(_isRecording ? Icons.stop : Icons.mic,
-                            color: _isRecording ? Colors.red : Colors.blue),
-                        onPressed: _isTranscribing ? null : _toggleRecording,
-                      ),
+                      suffixIcon: _sttEnabled
+                          ? IconButton(
+                              icon: Icon(_isRecording ? Icons.stop : Icons.mic,
+                                  color:
+                                      _isRecording ? Colors.red : Colors.blue),
+                              onPressed:
+                                  _isTranscribing ? null : _toggleRecording,
+                            )
+                          : null,
                     ),
                   ),
                 ),

@@ -24,6 +24,8 @@ class _ModelsPageState extends State<ModelsPage> {
   String? _selectedLlmFilename;
   String? _selectedTtsFilename;
   late TextEditingController _promptController;
+  bool _ttsEnabled = true;
+  bool _sttEnabled = true;
 
   @override
   void initState() {
@@ -33,6 +35,8 @@ class _ModelsPageState extends State<ModelsPage> {
     _loadSelectedLlm();
     _loadSelectedTts();
     _loadSelectedPrompt();
+    _loadTtsEnabled();
+    _loadSttEnabled();
     _loadModels();
   }
 
@@ -56,6 +60,30 @@ class _ModelsPageState extends State<ModelsPage> {
     final prompt = await _storage.read(key: 'selected_prompt') ??
         'Try to keep your responses shorter, about 50 - 100 words.';
     _promptController.text = prompt;
+    setState(() {});
+  }
+
+  Future<void> _loadTtsEnabled() async {
+    final enabled = await _storage.read(key: 'tts_enabled');
+    _ttsEnabled = enabled == 'true';
+    setState(() {});
+  }
+
+  Future<void> _loadSttEnabled() async {
+    final enabled = await _storage.read(key: 'stt_enabled');
+    _sttEnabled = enabled == 'true';
+    setState(() {});
+  }
+
+  Future<void> _saveTtsEnabled(bool enabled) async {
+    await _storage.write(key: 'tts_enabled', value: enabled.toString());
+    _ttsEnabled = enabled;
+    setState(() {});
+  }
+
+  Future<void> _saveSttEnabled(bool enabled) async {
+    await _storage.write(key: 'stt_enabled', value: enabled.toString());
+    _sttEnabled = enabled;
     setState(() {});
   }
 
@@ -198,6 +226,33 @@ class _ModelsPageState extends State<ModelsPage> {
               onChanged: (value) {
                 _storage.write(key: 'selected_prompt', value: value);
               },
+            ),
+          ),
+          Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 16.0, vertical: 8.0),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text('Voice Settings',
+                    style:
+                        TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+                const SizedBox(height: 8),
+                SwitchListTile(
+                  title: const Text('Text-to-Speech (TTS)'),
+                  subtitle: const Text('Enable AI voice responses'),
+                  value: _ttsEnabled,
+                  onChanged: (value) => _saveTtsEnabled(value),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                SwitchListTile(
+                  title: const Text('Speech-to-Text (STT)'),
+                  subtitle: const Text('Enable voice input recording'),
+                  value: _sttEnabled,
+                  onChanged: (value) => _saveSttEnabled(value),
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
             ),
           ),
           Expanded(
