@@ -1,6 +1,5 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <application
-        android:label="PrivAI"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher"
         android:largeHeap="true">
@@ -48,6 +47,15 @@
     <!-- Storage permissions for saving audio files -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" />
     <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
+    
+    <!-- Storage access permissions for Android 11+ -->
+    <uses-permission android:name="android.permission.MANAGE_MEDIA" />
+    
+    <!-- Request all files access -->
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
+    <uses-permission android:name="android.permission.READ_MEDIA_AUDIO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
 
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility?hl=en and

@@ -1,6 +1,5 @@
 import 'dart:io';
 import 'package:flutter/foundation.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:whisper_ggml/whisper_ggml.dart';
@@ -70,7 +69,7 @@ class WhisperService {
 
   Future<String?> _getSelectedModelFilename() async {
     const storage = FlutterSecureStorage();
-    return await storage.read(key: 'selected_tts_model');
+    return await storage.read(key: 'selected_stt_model');
   }
 
   WhisperModel _getModelFromFilename(String filename) {

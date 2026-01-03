@@ -10,7 +10,7 @@ void main() {
     });
 
     test('ChatScreen widget can be instantiated', () {
-      const chatScreen = ChatScreen();
+      final chatScreen = ChatScreen(themeToggleCallback: () {});
       expect(chatScreen, isA<ChatScreen>());
     });
 
