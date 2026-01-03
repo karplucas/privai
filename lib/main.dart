@@ -515,6 +515,8 @@ class ChatScreenState extends State<ChatScreen> {
               enabled: !_isProcessing && !_isTranscribing,
               onSubmitted: (val) => _sendMessage(val),
               decoration: InputDecoration(
+                isDense: true,
+                contentPadding: const EdgeInsets.symmetric(vertical: 10.0, horizontal: 14.0),
                 hintText: 'Type a message...',
                 filled: true,
                 fillColor: Theme.of(context).brightness == Brightness.dark
