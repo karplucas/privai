@@ -1,9 +1,9 @@
 import 'dart:io';
 import 'package:flutter/material.dart';
-import 'package:flutter_gemma/flutter_gemma.dart';
+import 'services/llm_service.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:path_provider/path_provider.dart'; // Correctly handles app-specific paths
+
 import 'services/whisper_service.dart';
 import 'services/kokoro_tts_service.dart';
 import 'services/conversation_service.dart';
@@ -11,13 +11,11 @@ import 'models_page.dart';
 
 enum LlmModel {
   gemma3_1b,
-  gemma3n_e2b,
+  gemma3nE2b,
 }
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  // Initialize the plugin structure
-  await FlutterGemma.initialize();
   runApp(const MyApp());
 }
 
@@ -77,8 +75,7 @@ class ChatScreenState extends State<ChatScreen> {
   final TextEditingController _textController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
 
-  InferenceModel? _inferenceModel;
-  InferenceChat? _chat;
+  final LlmService _llmService = LlmService();
 
   bool _isRecording = false;
   bool _isTranscribing = false;
@@ -148,18 +145,7 @@ class ChatScreenState extends State<ChatScreen> {
     }
   }
 
-  // --- MODEL & SETTINGS HELPERS ---
-
-  Future<String?> _getSelectedLlmFilename() async {
-    const storage = FlutterSecureStorage();
-    return await storage.read(key: 'selected_llm_model');
-  }
-
-  Future<String> _getSelectedPrompt() async {
-    const storage = FlutterSecureStorage();
-    return await storage.read(key: 'selected_prompt') ??
-        'Try to keep your responses shorter, under 100 words.';
-  }
+  // --- SETTINGS HELPERS ---
 
   Future<void> _loadSettings() async {
     const storage = FlutterSecureStorage();
@@ -200,11 +186,6 @@ class ChatScreenState extends State<ChatScreen> {
       await _saveCurrentConversation();
     }
     _currentConversation = await _conversationService.createNewConversation();
-    _chat = await _inferenceModel?.createChat();
-    if (_chat != null) {
-      final prompt = await _getSelectedPrompt();
-      await _chat!.addQueryChunk(Message(text: prompt, isUser: false));
-    }
     setState(() => _messages.clear());
   }
 
@@ -217,15 +198,6 @@ class ChatScreenState extends State<ChatScreen> {
         conversations.firstWhere((c) => c.id == conversationId);
     await _conversationService.setCurrentConversation(conversationId);
 
-    _chat = await _inferenceModel?.createChat();
-    if (_chat != null) {
-      final prompt = await _getSelectedPrompt();
-      await _chat!.addQueryChunk(Message(text: prompt, isUser: false));
-      for (final message in _currentConversation!.messages) {
-        await _chat!.addQueryChunk(
-            Message(text: message['text']!, isUser: message['role'] == 'user'));
-      }
-    }
     setState(() {
       _messages.clear();
       _messages.addAll(_currentConversation!.messages);
@@ -234,59 +206,25 @@ class ChatScreenState extends State<ChatScreen> {
 
   // --- CORE FIX: INITIALIZATION ---
 
-  /// Sets up the Gemma model using dynamic path resolution
+  /// Sets up the LLM model using LlmService
   Future<void> initializeChat() async {
-    if (_isModelLoading) return;
-    setState(() => _isModelLoading = true);
+    if (_llmService.isModelLoading) return;
+    setState(() => _isModelLoading = _llmService.isModelLoading);
 
     try {
-      debugPrint('Starting LLM model initialization...');
-      final selectedFilename =
-          await _getSelectedLlmFilename() ?? 'gemma-3n-E2B-it-int4.task';
-
-      // FIX: Instead of hardcoded /sdcard/, get the directory Android actually allows
-      final directory = await getExternalStorageDirectory();
-
-      if (directory == null) {
-        _showErrorSnackBar('Storage directory not found.');
-        return;
-      }
-
-      final modelPath = '${directory.path}/$selectedFilename';
-      final file = File(modelPath);
-
-      debugPrint('Targeting model path: $modelPath');
-
-      if (await file.exists()) {
-        // 1. Install model into the native Gemma engine
-        await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
-            .fromFile(modelPath)
-            .install();
-
-        // 2. Load model with 4096 tokens
-        _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 4096);
-
-        if (_inferenceModel != null) {
-          _chat = await _inferenceModel!.createChat();
-          final prompt = await _getSelectedPrompt();
-          await _chat!.addQueryChunk(Message(text: prompt, isUser: false));
-          debugPrint('Gemma ready.');
-        }
-      } else {
-        _showErrorSnackBar('Model file missing. Check: ${file.path}');
-      }
+      await _llmService.initializeChat();
+      debugPrint('LLM model initialized successfully.');
     } catch (e) {
-      debugPrint('Initialization Error: $e');
       _showErrorSnackBar('Initialization Error: $e');
     } finally {
-      if (mounted) setState(() => _isModelLoading = false);
+      if (mounted) setState(() => _isModelLoading = _llmService.isModelLoading);
     }
   }
 
   // --- MESSAGE HANDLING & INFERENCE ---
 
   Future<void> _sendMessage(String text) async {
-    if (text.trim().isEmpty || _isProcessing || _chat == null) return;
+    if (text.trim().isEmpty || _isProcessing || !_llmService.isReady) return;
 
     final userText = text.trim();
     _textController.clear();
@@ -319,14 +257,9 @@ class ChatScreenState extends State<ChatScreen> {
 
   Future<String> _getAIResponse(String input) async {
     try {
-      await _chat!.addQueryChunk(Message(text: input, isUser: true));
-      final response = await _chat!.generateChatResponse();
-
-      if (response is TextResponse) return response.token;
-      return 'Unexpected response format.';
+      return await _llmService.generateResponse(input);
     } catch (e) {
       debugPrint('Inference Error: $e');
-      _chat = await _inferenceModel?.createChat();
       return '⚠️ Context limit reached. History cleared. What next?';
     }
   }
@@ -395,8 +328,6 @@ class ChatScreenState extends State<ChatScreen> {
     _scrollController.dispose();
     _whisperService.dispose();
     _kokoroService.dispose();
-    _chat = null;
-    _inferenceModel = null;
     super.dispose();
   }
 
