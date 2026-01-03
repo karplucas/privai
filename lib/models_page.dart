@@ -34,6 +34,7 @@ class _ModelsPageState extends State<ModelsPage> {
   String? _selectedSttLanguage;
   bool _ttsEnabled = true;
   bool _sttEnabled = true;
+  bool _saveChatHistory = true;
   List<Map<String, dynamic>> _ttsLanguages = [];
   List<Map<String, dynamic>> _sttLanguages = [];
   List<String> _availableVoices = [];
@@ -56,8 +57,7 @@ class _ModelsPageState extends State<ModelsPage> {
     _loadLlmParameters();
     _loadTtsParameters();
     _loadSttParameters();
-    _loadTtsEnabled();
-    _loadSttEnabled();
+    _loadChatSettings();
   }
 
   Future<void> _loadToken() async {
@@ -94,15 +94,13 @@ class _ModelsPageState extends State<ModelsPage> {
     setState(() {});
   }
 
-  Future<void> _loadTtsEnabled() async {
-    final enabled = await _storage.read(key: 'tts_enabled');
-    _ttsEnabled = enabled == 'true';
-    setState(() {});
-  }
-
-  Future<void> _loadSttEnabled() async {
-    final enabled = await _storage.read(key: 'stt_enabled');
-    _sttEnabled = enabled == 'true';
+  Future<void> _loadChatSettings() async {
+    final ttsEnabled = await _storage.read(key: 'tts_enabled');
+    final sttEnabled = await _storage.read(key: 'stt_enabled');
+    final saveChat = await _storage.read(key: 'save_chat_history');
+    _ttsEnabled = ttsEnabled == 'true';
+    _sttEnabled = sttEnabled == 'true';
+    _saveChatHistory = saveChat == 'true' || saveChat == null; // Default to true
     setState(() {});
   }
 
@@ -115,6 +113,12 @@ class _ModelsPageState extends State<ModelsPage> {
   Future<void> _saveSttEnabled(bool enabled) async {
     await _storage.write(key: 'stt_enabled', value: enabled.toString());
     _sttEnabled = enabled;
+    setState(() {});
+  }
+
+  Future<void> _saveChatHistorySetting(bool enabled) async {
+    await _storage.write(key: 'save_chat_history', value: enabled.toString());
+    _saveChatHistory = enabled;
     setState(() {});
   }
 
@@ -480,6 +484,13 @@ class _ModelsPageState extends State<ModelsPage> {
                     subtitle: const Text('Enable voice input recording'),
                     value: _sttEnabled,
                     onChanged: (value) => _saveSttEnabled(value),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  SwitchListTile(
+                    title: const Text('Save Chat History'),
+                    subtitle: const Text('Enable saving conversations to local storage'),
+                    value: _saveChatHistory,
+                    onChanged: (value) => _saveChatHistorySetting(value),
                     contentPadding: EdgeInsets.zero,
                   ),
                 ],

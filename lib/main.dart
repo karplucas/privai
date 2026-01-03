@@ -83,6 +83,7 @@ class ChatScreenState extends State<ChatScreen> {
   bool _isModelLoading = false;
   bool _ttsEnabled = true;
   bool _sttEnabled = true;
+  bool _saveChatHistory = true;
   Conversation? _currentConversation;
 
   final WhisperService _whisperService = WhisperService.instance;
@@ -151,29 +152,36 @@ class ChatScreenState extends State<ChatScreen> {
     const storage = FlutterSecureStorage();
     final tts = await storage.read(key: 'tts_enabled');
     final stt = await storage.read(key: 'stt_enabled');
+    final saveChat = await storage.read(key: 'save_chat_history');
 
     setState(() {
       _ttsEnabled = tts == 'true';
       _sttEnabled = stt == 'true';
+      _saveChatHistory = saveChat == 'true' || saveChat == null; // Default to true
     });
   }
 
   // --- CONVERSATION LOGIC ---
 
   Future<void> _loadConversation() async {
-    _currentConversation = await _conversationService.getCurrentConversation();
-    if (_currentConversation != null) {
-      setState(() {
-        _messages.clear();
-        _messages.addAll(_currentConversation!.messages);
-      });
+    if (_saveChatHistory) {
+      _currentConversation = await _conversationService.getCurrentConversation();
+      if (_currentConversation != null) {
+        setState(() {
+          _messages.clear();
+          _messages.addAll(_currentConversation!.messages);
+        });
+      } else {
+        _currentConversation = await _conversationService.createNewConversation();
+      }
     } else {
       _currentConversation = await _conversationService.createNewConversation();
+      setState(() => _messages.clear());
     }
   }
 
   Future<void> _saveCurrentConversation() async {
-    if (_currentConversation != null && _messages.isNotEmpty) {
+    if (_saveChatHistory && _currentConversation != null && _messages.isNotEmpty) {
       await _conversationService.updateConversationMessages(
         _currentConversation!.id,
         _messages,
@@ -182,7 +190,7 @@ class ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _startNewConversation() async {
-    if (_currentConversation != null && _messages.isNotEmpty) {
+    if (_saveChatHistory && _currentConversation != null && _messages.isNotEmpty) {
       await _saveCurrentConversation();
     }
     _currentConversation = await _conversationService.createNewConversation();
@@ -190,7 +198,7 @@ class ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _loadConversationById(String conversationId) async {
-    if (_currentConversation != null && _messages.isNotEmpty) {
+    if (_saveChatHistory && _currentConversation != null && _messages.isNotEmpty) {
       await _saveCurrentConversation();
     }
     final conversations = await _conversationService.getConversations();
@@ -374,80 +382,81 @@ class ChatScreenState extends State<ChatScreen> {
               },
             ),
             const Divider(),
-            Expanded(
-              child: FutureBuilder<List<Conversation>>(
-                future: _conversationService.getConversations(),
-                builder: (context, snapshot) {
-                  if (!snapshot.hasData) {
-                    return const Center(child: CircularProgressIndicator());
-                  }
-                  final conversations = snapshot.data!;
-                  return ListView.builder(
-                    itemCount: conversations.length,
-                    itemBuilder: (context, index) {
-                      final conversation = conversations[index];
-                      final isCurrent =
-                          _currentConversation?.id == conversation.id;
-                      return ListTile(
-                        leading: const Icon(Icons.history),
-                        title: Text(conversation.title,
-                            style: TextStyle(
-                                fontWeight: isCurrent
-                                    ? FontWeight.bold
-                                    : FontWeight.normal)),
-                        trailing: isCurrent
-                            ? const Icon(Icons.check, color: Colors.blue)
-                            : IconButton(
-                                icon: const Icon(Icons.delete_outline),
-                                onPressed: () async {
-                                  final shouldDelete = await showDialog<bool>(
-                                    context: context,
-                                    builder: (context) => AlertDialog(
-                                      title: const Text('Delete Conversation'),
-                                      content: const Text(
-                                          'Are you sure you want to delete this conversation?'),
-                                      actions: [
-                                        TextButton(
-                                          onPressed: () =>
-                                              Navigator.pop(context, false),
-                                          child: const Text('Cancel'),
-                                        ),
-                                        TextButton(
-                                          onPressed: () =>
-                                              Navigator.pop(context, true),
-                                          child: const Text('Delete'),
-                                        ),
-                                      ],
-                                    ),
-                                  );
+            if (_saveChatHistory)
+              Expanded(
+                child: FutureBuilder<List<Conversation>>(
+                  future: _conversationService.getConversations(),
+                  builder: (context, snapshot) {
+                    if (!snapshot.hasData) {
+                      return const Center(child: CircularProgressIndicator());
+                    }
+                    final conversations = snapshot.data!;
+                    return ListView.builder(
+                      itemCount: conversations.length,
+                      itemBuilder: (context, index) {
+                        final conversation = conversations[index];
+                        final isCurrent =
+                            _currentConversation?.id == conversation.id;
+                        return ListTile(
+                          leading: const Icon(Icons.history),
+                          title: Text(conversation.title,
+                              style: TextStyle(
+                                  fontWeight: isCurrent
+                                      ? FontWeight.bold
+                                      : FontWeight.normal)),
+                          trailing: isCurrent
+                              ? const Icon(Icons.check, color: Colors.blue)
+                              : IconButton(
+                                  icon: const Icon(Icons.delete_outline),
+                                  onPressed: () async {
+                                    final shouldDelete = await showDialog<bool>(
+                                      context: context,
+                                      builder: (context) => AlertDialog(
+                                        title: const Text('Delete Conversation'),
+                                        content: const Text(
+                                            'Are you sure you want to delete this conversation?'),
+                                        actions: [
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, false),
+                                            child: const Text('Cancel'),
+                                          ),
+                                          TextButton(
+                                            onPressed: () =>
+                                                Navigator.pop(context, true),
+                                            child: const Text('Delete'),
+                                          ),
+                                        ],
+                                      ),
+                                    );
 
-                                  if (shouldDelete == true) {
-                                    await _conversationService
-                                        .deleteConversation(conversation.id);
+                                    if (shouldDelete == true) {
+                                      await _conversationService
+                                          .deleteConversation(conversation.id);
 
-                                    // If deleted conversation was current, start new one
-                                    if (_currentConversation?.id ==
-                                        conversation.id) {
-                                      await _startNewConversation();
+                                      // If deleted conversation was current, start new one
+                                      if (_currentConversation?.id ==
+                                          conversation.id) {
+                                        await _startNewConversation();
+                                      }
+
+                                      setState(() {}); // Refresh drawer
                                     }
-
-                                    setState(() {}); // Refresh drawer
-                                  }
-                                },
-                              ),
-                        onTap: () async {
-                          await _loadConversationById(conversation.id);
-                          if (mounted) {
-                            Navigator.pop(this.context);
-                          }
-                        },
-                        selected: isCurrent,
-                      );
-                    },
-                  );
-                },
+                                  },
+                                ),
+                          onTap: () async {
+                            await _loadConversationById(conversation.id);
+                            if (mounted) {
+                              Navigator.pop(this.context);
+                            }
+                          },
+                          selected: isCurrent,
+                        );
+                      },
+                    );
+                  },
+                ),
               ),
-            ),
           ],
         ),
       ),
