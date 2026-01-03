@@ -2,10 +2,17 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:permission_handler/permission_handler.dart';
+import 'package:path_provider/path_provider.dart'; // Correctly handles app-specific paths
 import 'services/whisper_service.dart';
 import 'services/kokoro_tts_service.dart';
 import 'services/conversation_service.dart';
 import 'models_page.dart';
+
+enum LlmModel {
+  gemma3_1b,
+  gemma3n_e2b,
+}
 
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -14,25 +21,52 @@ void main() async {
   runApp(const MyApp());
 }
 
-class MyApp extends StatelessWidget {
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
+
+  @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  ThemeMode _themeMode = ThemeMode.dark;
+
+  void _toggleTheme() {
+    setState(() {
+      _themeMode =
+          _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark;
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      title: 'PrivAI',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        primarySwatch: Colors.blue,
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.light,
+        ),
         useMaterial3: true,
       ),
-      home: const ChatScreen(),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.blue,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+        scaffoldBackgroundColor: Colors.black,
+      ),
+      themeMode: _themeMode,
+      home: ChatScreen(themeToggleCallback: _toggleTheme),
     );
   }
 }
 
 class ChatScreen extends StatefulWidget {
-  const ChatScreen({super.key});
+  final VoidCallback themeToggleCallback;
+
+  const ChatScreen({super.key, required this.themeToggleCallback});
 
   @override
   State<ChatScreen> createState() => ChatScreenState();
@@ -58,42 +92,63 @@ class ChatScreenState extends State<ChatScreen> {
   final KokoroTtsService _kokoroService = KokoroTtsService();
   final ConversationService _conversationService = ConversationService();
 
+  // FIX: Improved permission handling for Android 11+
+  Future<void> _requestStoragePermissions() async {
+    try {
+      if (Platform.isAndroid) {
+        // Standard permissions for older Android versions
+        await [
+          Permission.storage,
+          Permission.microphone,
+          Permission.mediaLibrary,
+        ].request();
+
+        // For Android 11+ (API 30), we check Manage External Storage
+        // though usually getExternalStorageDirectory() doesn't require this.
+        if (await Permission.manageExternalStorage.isDenied) {
+          debugPrint('Requesting Manage External Storage...');
+          await Permission.manageExternalStorage.request();
+        }
+      }
+    } catch (e) {
+      debugPrint('Permission request failed: $e');
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-    // Load settings and start initialization
     _loadSettings();
     _startFullInitialization();
   }
 
   Future<void> _startFullInitialization() async {
+    await _requestStoragePermissions();
     await initializeChat();
     await _loadConversation();
 
     await Future.delayed(const Duration(milliseconds: 500));
 
-    // 3. Initialize Whisper (if enabled)
     if (_sttEnabled) {
       try {
         debugPrint('Initializing Whisper...');
         await _whisperService.initialize();
-        debugPrint('Whisper ready.');
       } catch (e) {
         debugPrint('Whisper init failed: $e');
       }
     }
 
-    // 4. Initialize Kokoro (if enabled)
     if (_ttsEnabled) {
       try {
         debugPrint('Initializing Kokoro...');
         await _kokoroService.initialize();
-        debugPrint('Kokoro ready.');
       } catch (e) {
         debugPrint('Kokoro init failed: $e');
       }
     }
   }
+
+  // --- MODEL & SETTINGS HELPERS ---
 
   Future<String?> _getSelectedLlmFilename() async {
     const storage = FlutterSecureStorage();
@@ -117,115 +172,90 @@ class ChatScreenState extends State<ChatScreen> {
     });
   }
 
-  Future<void> _loadConversation() async {
-    debugPrint('Loading current conversation...');
-    _currentConversation = await _conversationService.getCurrentConversation();
+  // --- CONVERSATION LOGIC ---
 
+  Future<void> _loadConversation() async {
+    _currentConversation = await _conversationService.getCurrentConversation();
     if (_currentConversation != null) {
-      debugPrint(
-          'Loaded conversation ${_currentConversation!.id} with ${_currentConversation!.messages.length} messages');
       setState(() {
         _messages.clear();
         _messages.addAll(_currentConversation!.messages);
       });
     } else {
-      // Create a new conversation if none exists
-      debugPrint('No current conversation, creating new one');
       _currentConversation = await _conversationService.createNewConversation();
     }
   }
 
   Future<void> _saveCurrentConversation() async {
-    if (_currentConversation != null) {
-      debugPrint(
-          'Saving conversation ${_currentConversation!.id} with ${_messages.length} messages');
+    if (_currentConversation != null && _messages.isNotEmpty) {
       await _conversationService.updateConversationMessages(
         _currentConversation!.id,
         _messages,
       );
-      _currentConversation = _currentConversation!.copyWith(
-        messages: List.from(_messages),
-        updatedAt: DateTime.now(),
-      );
-    } else {
-      debugPrint('No current conversation to save');
     }
   }
 
   Future<void> _startNewConversation() async {
-    // Save current conversation if it has messages
     if (_currentConversation != null && _messages.isNotEmpty) {
       await _saveCurrentConversation();
     }
-
-    // Create new conversation
     _currentConversation = await _conversationService.createNewConversation();
-
-    // Clear messages and reset chat
     _chat = await _inferenceModel?.createChat();
     if (_chat != null) {
       final prompt = await _getSelectedPrompt();
-      final systemMessage = Message(text: prompt, isUser: false);
-      await _chat!.addQueryChunk(systemMessage);
+      await _chat!.addQueryChunk(Message(text: prompt, isUser: false));
     }
-
-    setState(() {
-      _messages.clear();
-    });
+    setState(() => _messages.clear());
   }
 
   Future<void> _loadConversationById(String conversationId) async {
-    // Save current conversation if it has messages
     if (_currentConversation != null && _messages.isNotEmpty) {
       await _saveCurrentConversation();
     }
-
-    // Load the selected conversation
     final conversations = await _conversationService.getConversations();
     _currentConversation =
         conversations.firstWhere((c) => c.id == conversationId);
-
-    // Set as current
     await _conversationService.setCurrentConversation(conversationId);
 
-    // Reset chat and load messages
     _chat = await _inferenceModel?.createChat();
     if (_chat != null) {
       final prompt = await _getSelectedPrompt();
-      final systemMessage = Message(text: prompt, isUser: false);
-      await _chat!.addQueryChunk(systemMessage);
-
-      // Add existing messages to chat context
+      await _chat!.addQueryChunk(Message(text: prompt, isUser: false));
       for (final message in _currentConversation!.messages) {
-        final isUser = message['role'] == 'user';
-        final msg = Message(text: message['text']!, isUser: isUser);
-        await _chat!.addQueryChunk(msg);
+        await _chat!.addQueryChunk(
+            Message(text: message['text']!, isUser: message['role'] == 'user'));
       }
     }
-
     setState(() {
       _messages.clear();
       _messages.addAll(_currentConversation!.messages);
     });
   }
 
-  /// Sets up the Gemma model with a 4096 context window
+  // --- CORE FIX: INITIALIZATION ---
+
+  /// Sets up the Gemma model using dynamic path resolution
   Future<void> initializeChat() async {
     if (_isModelLoading) return;
     setState(() => _isModelLoading = true);
 
     try {
-      debugPrint('Starting model initialization...');
+      debugPrint('Starting LLM model initialization...');
       final selectedFilename =
           await _getSelectedLlmFilename() ?? 'gemma-3n-E2B-it-int4.task';
 
-      // Standard app-specific directory for model files
-      final dir =
-          Directory('/sdcard/Android/data/com.LucasKarpinski.privai/files');
-      if (!await dir.exists()) await dir.create(recursive: true);
+      // FIX: Instead of hardcoded /sdcard/, get the directory Android actually allows
+      final directory = await getExternalStorageDirectory();
 
-      final modelPath = '${dir.path}/$selectedFilename';
+      if (directory == null) {
+        _showErrorSnackBar('Storage directory not found.');
+        return;
+      }
+
+      final modelPath = '${directory.path}/$selectedFilename';
       final file = File(modelPath);
+
+      debugPrint('Targeting model path: $modelPath');
 
       if (await file.exists()) {
         // 1. Install model into the native Gemma engine
@@ -233,31 +263,28 @@ class ChatScreenState extends State<ChatScreen> {
             .fromFile(modelPath)
             .install();
 
-        // 2. Load model with 4096 tokens (increased from 512 to prevent frequent crashes)
+        // 2. Load model with 4096 tokens
         _inferenceModel = await FlutterGemma.getActiveModel(maxTokens: 4096);
 
         if (_inferenceModel != null) {
-          // 3. Create a single persistent chat session
           _chat = await _inferenceModel!.createChat();
-
-          // 4. Add initial system prompt
           final prompt = await _getSelectedPrompt();
-          final systemMessage = Message(text: prompt, isUser: false);
-          await _chat!.addQueryChunk(systemMessage);
-
-          debugPrint('Gemma ready. Context: 4096 tokens.');
+          await _chat!.addQueryChunk(Message(text: prompt, isUser: false));
+          debugPrint('Gemma ready.');
         }
       } else {
-        _showErrorSnackBar('Model not found. Please download it in Settings.');
+        _showErrorSnackBar('Model file missing. Check: ${file.path}');
       }
     } catch (e) {
       debugPrint('Initialization Error: $e');
+      _showErrorSnackBar('Initialization Error: $e');
     } finally {
       if (mounted) setState(() => _isModelLoading = false);
     }
   }
 
-  /// Handles sending the message and getting AI response
+  // --- MESSAGE HANDLING & INFERENCE ---
+
   Future<void> _sendMessage(String text) async {
     if (text.trim().isEmpty || _isProcessing || _chat == null) return;
 
@@ -279,41 +306,28 @@ class ChatScreenState extends State<ChatScreen> {
       });
       _scrollToBottom();
 
-      // Play TTS if enabled
       if (_ttsEnabled && response.isNotEmpty) {
         try {
           await _kokoroService.speak(response);
         } catch (e) {
-          debugPrint('TTS failed: $e');
+          debugPrint('TTS error: $e');
         }
       }
-
-      // Save conversation after each exchange
       await _saveCurrentConversation();
     }
   }
 
-  /// Core inference logic with crash-protection for context overflow
   Future<String> _getAIResponse(String input) async {
     try {
-      final userMessage = Message(text: input, isUser: true);
-
-      // Send to native engine
-      await _chat!.addQueryChunk(userMessage);
+      await _chat!.addQueryChunk(Message(text: input, isUser: true));
       final response = await _chat!.generateChatResponse();
 
-      if (response is TextResponse) {
-        return response.token;
-      }
-      return 'I encountered an unexpected response format.';
+      if (response is TextResponse) return response.token;
+      return 'Unexpected response format.';
     } catch (e) {
-      debugPrint('Inference Error (Likely Context Full): $e');
-
-      // CRITICAL: If the native engine throws an OUT_OF_RANGE error,
-      // we must reset the chat session or the app will abort.
+      debugPrint('Inference Error: $e');
       _chat = await _inferenceModel?.createChat();
-
-      return '⚠️ My memory limit was reached, so I had to clear our history. What were we talking about?';
+      return '⚠️ Context limit reached. History cleared. What next?';
     }
   }
 
@@ -344,11 +358,8 @@ class ChatScreenState extends State<ChatScreen> {
           final transcription =
               await _whisperService.transcribeFromFile(audioPath);
           if (mounted) {
-            setState(() =>
-                _messages.removeLast()); // Remove transcription placeholder
-            if (transcription.isNotEmpty) {
-              await _sendMessage(transcription);
-            }
+            setState(() => _messages.removeLast());
+            if (transcription.isNotEmpty) await _sendMessage(transcription);
           }
         } catch (e) {
           _showErrorSnackBar('Transcription failed: $e');
@@ -358,10 +369,16 @@ class ChatScreenState extends State<ChatScreen> {
       }
     } else {
       try {
-        await _whisperService.startRecording();
-        setState(() => _isRecording = true);
+        final status = await Permission.microphone.request();
+        if (status.isGranted) {
+          await _whisperService.startRecording();
+          setState(() => _isRecording = true);
+        } else {
+          _showErrorSnackBar('Microphone permission required.');
+          if (status.isPermanentlyDenied) await openAppSettings();
+        }
       } catch (e) {
-        _showErrorSnackBar('Check microphone permissions.');
+        _showErrorSnackBar('Recording failed: $e');
       }
     }
   }
@@ -373,40 +390,56 @@ class ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
-    _saveCurrentConversation(); // Save before disposing
+    _saveCurrentConversation();
     _textController.dispose();
     _scrollController.dispose();
     _whisperService.dispose();
     _kokoroService.dispose();
-
-    // Release native resources
     _chat = null;
     _inferenceModel = null;
     super.dispose();
   }
 
+  // --- UI BUILD ---
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
       appBar: AppBar(
-        title: const Text('🤖 PrivAI'),
-        centerTitle: true,
-        elevation: 2,
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+        elevation: 0,
+        actions: [
+          IconButton(
+            icon: Icon(Theme.of(context).brightness == Brightness.dark
+                ? Icons.light_mode
+                : Icons.dark_mode),
+            onPressed: widget.themeToggleCallback,
+          ),
+        ],
       ),
       drawer: Drawer(
         child: Column(
           children: [
-            const DrawerHeader(
-              decoration: BoxDecoration(color: Colors.blue),
-              child: Text('PrivAI',
-                  style: TextStyle(color: Colors.white, fontSize: 24)),
-            ),
+            const SizedBox(height: 56),
             ListTile(
               leading: const Icon(Icons.chat),
               title: const Text('New Chat'),
               onTap: () async {
                 await _startNewConversation();
+                if (mounted) {
+                  Navigator.pop(this.context);
+                }
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.settings),
+              title: const Text('Manage Models'),
+              onTap: () {
                 Navigator.pop(context);
+                Navigator.push(
+                    context,
+                    MaterialPageRoute(
+                        builder: (context) => const ModelsPage()));
               },
             ),
             const Divider(),
@@ -414,38 +447,23 @@ class ChatScreenState extends State<ChatScreen> {
               child: FutureBuilder<List<Conversation>>(
                 future: _conversationService.getConversations(),
                 builder: (context, snapshot) {
-                  if (snapshot.connectionState == ConnectionState.waiting) {
+                  if (!snapshot.hasData) {
                     return const Center(child: CircularProgressIndicator());
                   }
-
-                  final conversations = snapshot.data ?? [];
-
-                  if (conversations.isEmpty) {
-                    return const Center(
-                      child: Text('No conversations yet'),
-                    );
-                  }
-
+                  final conversations = snapshot.data!;
                   return ListView.builder(
                     itemCount: conversations.length,
                     itemBuilder: (context, index) {
                       final conversation = conversations[index];
                       final isCurrent =
                           _currentConversation?.id == conversation.id;
-
                       return ListTile(
                         leading: const Icon(Icons.history),
-                        title: Text(
-                          conversation.title,
-                          style: TextStyle(
-                            fontWeight:
-                                isCurrent ? FontWeight.bold : FontWeight.normal,
-                          ),
-                        ),
-                        subtitle: Text(
-                          _conversationService
-                              .formatDate(conversation.updatedAt),
-                        ),
+                        title: Text(conversation.title,
+                            style: TextStyle(
+                                fontWeight: isCurrent
+                                    ? FontWeight.bold
+                                    : FontWeight.normal)),
                         trailing: isCurrent
                             ? const Icon(Icons.check, color: Colors.blue)
                             : IconButton(
@@ -488,7 +506,9 @@ class ChatScreenState extends State<ChatScreen> {
                               ),
                         onTap: () async {
                           await _loadConversationById(conversation.id);
-                          Navigator.pop(context);
+                          if (mounted) {
+                            Navigator.pop(this.context);
+                          }
                         },
                         selected: isCurrent,
                       );
@@ -496,18 +516,6 @@ class ChatScreenState extends State<ChatScreen> {
                   );
                 },
               ),
-            ),
-            const Divider(),
-            ListTile(
-              leading: const Icon(Icons.settings),
-              title: const Text('Manage Models'),
-              onTap: () {
-                Navigator.pop(context);
-                Navigator.push(
-                    context,
-                    MaterialPageRoute(
-                        builder: (context) => const ModelsPage()));
-              },
             ),
           ],
         ),
@@ -524,7 +532,6 @@ class ChatScreenState extends State<ChatScreen> {
                 final message = _messages[index];
                 final isUser = message['role'] == 'user';
                 final isSystem = message['role'] == 'system';
-
                 return Align(
                   alignment: isUser
                       ? Alignment.centerRight
@@ -535,22 +542,24 @@ class ChatScreenState extends State<ChatScreen> {
                         horizontal: 14, vertical: 10),
                     decoration: BoxDecoration(
                       color: isUser
-                          ? Colors.blue[600]
-                          : (isSystem ? Colors.amber[100] : Colors.grey[200]),
-                      borderRadius: BorderRadius.only(
-                        topLeft: const Radius.circular(15),
-                        topRight: const Radius.circular(15),
-                        bottomLeft:
-                            isUser ? const Radius.circular(15) : Radius.zero,
-                        bottomRight:
-                            isUser ? Radius.zero : const Radius.circular(15),
-                      ),
+                          ? Theme.of(context).brightness == Brightness.dark
+                              ? Colors.grey[700]
+                              : Colors.grey[300]
+                          : (isSystem
+                              ? Colors.grey[900]
+                              : Theme.of(context).scaffoldBackgroundColor),
+                      borderRadius: BorderRadius.circular(15),
                     ),
-                    child: Text(
-                      message['text']!,
-                      style: TextStyle(
-                          color: isUser ? Colors.white : Colors.black87),
-                    ),
+                    child: Text(message['text']!,
+                        style: TextStyle(
+                          color: isUser
+                              ? Theme.of(context).brightness == Brightness.dark
+                                  ? Colors.white
+                                  : Colors.black87
+                              : Theme.of(context).brightness == Brightness.dark
+                                  ? Colors.white70
+                                  : Colors.black87,
+                        )),
                   ),
                 );
               },
@@ -558,55 +567,57 @@ class ChatScreenState extends State<ChatScreen> {
           ),
           if (_isProcessing)
             const Padding(
-              padding: EdgeInsets.all(8.0),
-              child: Text("PrivAI is thinking...",
-                  style: TextStyle(
-                      fontStyle: FontStyle.italic, color: Colors.grey)),
-            ),
+                padding: EdgeInsets.all(8.0),
+                child: Text("Thinking...",
+                    style: TextStyle(
+                        fontStyle: FontStyle.italic, color: Colors.grey))),
+          if (_isTranscribing)
+            const Padding(
+                padding: EdgeInsets.all(8.0),
+                child: Text("Transcribing...",
+                    style: TextStyle(
+                        fontStyle: FontStyle.italic, color: Colors.grey))),
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
-            color: Colors.white,
-            child: Row(
-              children: [
-                Expanded(
-                  child: TextField(
-                    controller: _textController,
-                    enabled: !_isProcessing && !_isTranscribing,
-                    // RESTORES ENTER KEY FUNCTIONALITY
-                    textInputAction: TextInputAction.send,
-                    onSubmitted: (val) => _sendMessage(val),
-                    decoration: InputDecoration(
-                      hintText: 'Type a message...',
-                      filled: true,
-                      fillColor: Colors.grey[100],
-                      border: OutlineInputBorder(
-                          borderRadius: BorderRadius.circular(25),
-                          borderSide: BorderSide.none),
-                      contentPadding:
-                          const EdgeInsets.symmetric(horizontal: 20),
-                      suffixIcon: _sttEnabled
-                          ? IconButton(
-                              icon: Icon(_isRecording ? Icons.stop : Icons.mic,
-                                  color:
-                                      _isRecording ? Colors.red : Colors.blue),
-                              onPressed:
-                                  _isTranscribing ? null : _toggleRecording,
-                            )
-                          : null,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+            child: TextField(
+              controller: _textController,
+              enabled: !_isProcessing && !_isTranscribing,
+              onSubmitted: (val) => _sendMessage(val),
+              decoration: InputDecoration(
+                hintText: 'Type a message...',
+                filled: true,
+                fillColor: Theme.of(context).brightness == Brightness.dark
+                    ? Colors.grey[700]
+                    : Colors.grey[300],
+                border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(25),
+                    borderSide: BorderSide.none),
+                suffixIcon: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (_sttEnabled)
+                      IconButton(
+                        icon: Icon(_isRecording ? Icons.stop : Icons.mic,
+                            color: _isRecording
+                                ? Colors.red
+                                : (Theme.of(context).brightness ==
+                                        Brightness.dark
+                                    ? Colors.white
+                                    : Colors.black)),
+                        onPressed: _isTranscribing ? null : _toggleRecording,
+                      ),
+                    IconButton(
+                      icon: Icon(Icons.send,
+                          color: Theme.of(context).brightness == Brightness.dark
+                              ? Colors.white
+                              : Colors.black),
+                      onPressed: (_isProcessing || _isTranscribing)
+                          ? null
+                          : () => _sendMessage(_textController.text),
                     ),
-                  ),
+                  ],
                 ),
-                const SizedBox(width: 8),
-                CircleAvatar(
-                  backgroundColor: Colors.blue,
-                  child: IconButton(
-                    icon: const Icon(Icons.send, color: Colors.white),
-                    onPressed: (_isProcessing || _isTranscribing)
-                        ? null
-                        : () => _sendMessage(_textController.text),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ],

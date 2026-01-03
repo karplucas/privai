@@ -155,4 +155,41 @@ class KokoroTtsService {
   }
 
   bool get isInitialized => _isInitialized;
+
+  Future<List<String>> getAvailableVoiceIds() async {
+    // Return default voice IDs that should be available
+    return [
+      'af_heart',
+      'af_sarah',
+      'af_nicole',
+      'af_adam',
+      'af_sky',
+      'am_michael',
+      'am_fenrir',
+      'bm_daniel',
+      'bm_george',
+      'bm_lewis',
+      'ef_dora',
+      'em_alex',
+      'em_santa',
+      'ff_azure',
+      'fm_alice',
+      'fm_ginny',
+      'hf_alpha',
+      'hm_roland',
+      'hm_peter',
+      'if_sara',
+      'im_nicole',
+      'jf_alpha',
+      'jf_gongitsune',
+      'jf_kumo',
+      'jm_kumo',
+      'pf_taylor',
+      'pm_lee',
+      'pf_santa',
+      'zf_xiaoya',
+      'zf_xiaotian',
+      'zm_yunjian',
+    ];
+  }
 }
