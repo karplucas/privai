@@ -1,15 +1,8 @@
-buildscript {
-    ext.kotlin_version = '2.3.0' // Match flutter_onnxruntime requirement
-    repositories {
-        google()
-        mavenCentral()
-    }
-    dependencies {
-        classpath "com.android.tools.build:gradle:8.7.0"
-        classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:$kotlin_version"
-    }
-}
-
+// Plugin versions are resolved in settings.gradle through pluginManagement.
+// The legacy `buildscript { classpath ... }` block that used to live here
+// declared a different AGP (8.7.0) and Kotlin (2.3.0) than settings.gradle
+// requested (8.11.1 / 2.1.0), which puts two versions of the same plugin on the
+// build classpath.
 
 rootProject.layout.buildDirectory.value(rootProject.layout.projectDirectory.dir("../build"))
 
@@ -21,15 +14,14 @@ allprojects {
 }
 
 subprojects {
-    // Replace the old project.buildDir logic
     project.layout.buildDirectory.value(rootProject.layout.buildDirectory.dir(project.name).get())
-}
 
-subprojects {
     if (project.name != 'app') {
         project.evaluationDependsOn(':app')
     }
 
+    // Some plugins still ship with a lower Java target than the app; align them
+    // so the whole build agrees on 17.
     afterEvaluate { project ->
         if (project.hasProperty('android')) {
             project.android {
@@ -40,8 +32,6 @@ subprojects {
                     sourceCompatibility JavaVersion.VERSION_17
                     targetCompatibility JavaVersion.VERSION_17
                 }
-
-                // FIXED: Only apply kotlinOptions if the plugin exists
                 if (project.plugins.hasPlugin('kotlin-android') ||
                     project.plugins.hasPlugin('org.jetbrains.kotlin.android')) {
                     kotlinOptions {
@@ -53,9 +43,6 @@ subprojects {
     }
 }
 
-// 4. Clean task
 tasks.register("clean", Delete) {
     delete rootProject.layout.buildDirectory
 }
-
-

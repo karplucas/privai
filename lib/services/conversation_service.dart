@@ -1,16 +1,15 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:intl/intl.dart';
+import 'package:path_provider/path_provider.dart';
 
+/// A single stored chat.
 class Conversation {
-  final String id;
-  final String title;
-  final List<Map<String, String>> messages;
-  final DateTime createdAt;
-  final DateTime updatedAt;
-
-  Conversation({
+  const Conversation({
     required this.id,
     required this.title,
     required this.messages,
@@ -18,263 +17,276 @@ class Conversation {
     required this.updatedAt,
   });
 
-  Map<String, dynamic> toJson() {
-    return {
-      'id': id,
-      'title': title,
-      'messages': messages,
-      'createdAt': createdAt.toIso8601String(),
-      'updatedAt': updatedAt.toIso8601String(),
-    };
+  final String id;
+  final String title;
+  final List<Map<String, String>> messages;
+  final DateTime createdAt;
+  final DateTime updatedAt;
+
+  Map<String, dynamic> toJson() => {
+        'id': id,
+        'title': title,
+        'messages': messages,
+        'createdAt': createdAt.toIso8601String(),
+        'updatedAt': updatedAt.toIso8601String(),
+      };
+
+  /// Parses a stored conversation, or returns null when the record is too
+  /// damaged to be useful.
+  ///
+  /// The previous version substituted an empty "Recovered Chat" with a fresh id
+  /// on any parse error, which meant a single bad record quietly multiplied into
+  /// new empty conversations on every load.
+  static Conversation? tryFromJson(Map<String, dynamic> json) {
+    final id = json['id']?.toString();
+    if (id == null || id.isEmpty) {
+      debugPrint('Conversation: dropping record with no id');
+      return null;
+    }
+
+    final createdAt = _parseDate(json['createdAt']);
+    final updatedAt = _parseDate(json['updatedAt']) ?? createdAt;
+
+    return Conversation(
+      id: id,
+      title: json['title']?.toString() ?? 'New Chat',
+      messages: _parseMessages(json['messages']),
+      createdAt: createdAt ?? DateTime.now(),
+      updatedAt: updatedAt ?? DateTime.now(),
+    );
   }
 
-  factory Conversation.fromJson(Map<String, dynamic> json) {
-    try {
-      final id = json['id']?.toString() ?? '';
-      final title = json['title']?.toString() ?? 'New Chat';
-      final createdAtStr =
-          json['createdAt']?.toString() ?? DateTime.now().toIso8601String();
-      final updatedAtStr =
-          json['updatedAt']?.toString() ?? DateTime.now().toIso8601String();
+  static DateTime? _parseDate(Object? raw) =>
+      raw is String ? DateTime.tryParse(raw) : null;
 
-      List<Map<String, String>> messages = [];
-      if (json['messages'] is List) {
-        messages = (json['messages'] as List)
-            .map((msg) {
-              if (msg is Map<String, dynamic>) {
-                return {
-                  'role': msg['role']?.toString() ?? 'user',
-                  'text': msg['text']?.toString() ?? '',
-                };
-              }
-              return {'role': 'user', 'text': msg.toString()};
-            })
-            .cast<Map<String, String>>()
-            .toList();
+  static List<Map<String, String>> _parseMessages(Object? raw) {
+    if (raw is! List) return [];
+    return raw.map<Map<String, String>>((message) {
+      if (message is Map) {
+        return {
+          'role': message['role']?.toString() ?? 'user',
+          'text': message['text']?.toString() ?? '',
+        };
       }
-
-      return Conversation(
-        id: id,
-        title: title,
-        messages: messages,
-        createdAt: DateTime.parse(createdAtStr),
-        updatedAt: DateTime.parse(updatedAtStr),
-      );
-    } catch (e) {
-      debugPrint('Error parsing conversation from JSON: $e, data: $json');
-      // Return a default conversation if parsing fails
-      return Conversation(
-        id: DateTime.now().millisecondsSinceEpoch.toString(),
-        title: 'Recovered Chat',
-        messages: [],
-        createdAt: DateTime.now(),
-        updatedAt: DateTime.now(),
-      );
-    }
+      return {'role': 'user', 'text': message.toString()};
+    }).toList();
   }
 
   Conversation copyWith({
-    String? id,
     String? title,
     List<Map<String, String>>? messages,
-    DateTime? createdAt,
     DateTime? updatedAt,
-  }) {
-    return Conversation(
-      id: id ?? this.id,
-      title: title ?? this.title,
-      messages: messages ?? this.messages,
-      createdAt: createdAt ?? this.createdAt,
-      updatedAt: updatedAt ?? this.updatedAt,
-    );
-  }
+  }) =>
+      Conversation(
+        id: id,
+        title: title ?? this.title,
+        messages: messages ?? this.messages,
+        createdAt: createdAt,
+        updatedAt: updatedAt ?? this.updatedAt,
+      );
 }
 
+/// Persists chat history.
+///
+/// History used to live in [FlutterSecureStorage], which on Android is backed by
+/// encrypted shared preferences — a key/value store meant for small secrets, not
+/// for an ever-growing JSON blob of every message ever sent. Conversations are
+/// now written to a file in the app's private directory; only the pointer to the
+/// current conversation stays in preferences.
 class ConversationService {
   static final ConversationService _instance = ConversationService._internal();
   factory ConversationService() => _instance;
   ConversationService._internal();
 
-  final FlutterSecureStorage _storage = const FlutterSecureStorage();
-  static const String _conversationsKey = 'conversations';
+  static const String _fileName = 'conversations.json';
   static const String _currentConversationKey = 'current_conversation';
+  static const String _legacyConversationsKey = 'conversations';
+
+  final FlutterSecureStorage _prefs = const FlutterSecureStorage();
+
+  /// Serialises writes so two concurrent saves cannot interleave and corrupt
+  /// the file.
+  Future<void> _writeQueue = Future.value();
+
+  List<Conversation>? _cache;
+
+  Future<File> _file() async {
+    final dir = await getApplicationSupportDirectory();
+    if (!await dir.exists()) await dir.create(recursive: true);
+    return File('${dir.path}/$_fileName');
+  }
 
   Future<List<Conversation>> getConversations() async {
+    final cached = _cache;
+    if (cached != null) return List.unmodifiable(cached);
+
+    final conversations = await _readFromDisk();
+    conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    _cache = conversations;
+    return List.unmodifiable(conversations);
+  }
+
+  Future<List<Conversation>> _readFromDisk() async {
     try {
-      final conversationsJson = await _storage.read(key: _conversationsKey);
-      if (conversationsJson == null) {
-        debugPrint('No conversations found in storage');
-        return [];
-      }
+      final file = await _file();
+      if (!await file.exists()) return _migrateFromSecureStorage();
 
-      final List<dynamic> jsonList = json.decode(conversationsJson);
-      final conversations = <Conversation>[];
-
-      for (final jsonItem in jsonList) {
-        try {
-          if (jsonItem is Map<String, dynamic>) {
-            conversations.add(Conversation.fromJson(jsonItem));
-          } else {
-            debugPrint('Invalid conversation format: $jsonItem');
-          }
-        } catch (e) {
-          debugPrint('Error parsing conversation: $e, data: $jsonItem');
-        }
-      }
-
-      conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
-
-      debugPrint('Loaded ${conversations.length} conversations from storage');
-      return conversations;
+      final raw = await file.readAsString();
+      if (raw.trim().isEmpty) return [];
+      return _decode(raw);
     } catch (e) {
-      debugPrint('Error loading conversations: $e');
+      debugPrint('ConversationService: could not read history: $e');
       return [];
     }
   }
 
+  List<Conversation> _decode(String raw) {
+    final decoded = json.decode(raw);
+    if (decoded is! List) return [];
+    return decoded
+        .whereType<Map<String, dynamic>>()
+        .map(Conversation.tryFromJson)
+        .whereType<Conversation>()
+        .toList();
+  }
+
+  /// One-time move of history written by earlier versions of the app.
+  Future<List<Conversation>> _migrateFromSecureStorage() async {
+    final legacy = await _prefs.read(key: _legacyConversationsKey);
+    if (legacy == null || legacy.trim().isEmpty) return [];
+
+    try {
+      final conversations = _decode(legacy);
+      debugPrint(
+        'ConversationService: migrating ${conversations.length} conversations '
+        'out of secure storage',
+      );
+      await _persist(conversations);
+      await _prefs.delete(key: _legacyConversationsKey);
+      return conversations;
+    } catch (e) {
+      debugPrint('ConversationService: migration failed: $e');
+      return [];
+    }
+  }
+
+  Future<void> _persist(List<Conversation> conversations) {
+    // Chain onto the queue so writes stay ordered.
+    return _writeQueue = _writeQueue.then((_) async {
+      final file = await _file();
+      final temp = File('${file.path}.tmp');
+      await temp.writeAsString(
+        json.encode(conversations.map((c) => c.toJson()).toList()),
+        flush: true,
+      );
+      // Rename is atomic, so a crash mid-write cannot truncate the history.
+      await temp.rename(file.path);
+    }).catchError((Object e) {
+      debugPrint('ConversationService: write failed: $e');
+    });
+  }
+
   Future<Conversation?> getCurrentConversation() async {
-    try {
-      final currentId = await _storage.read(key: _currentConversationKey);
-      if (currentId == null) return null;
+    final currentId = await _prefs.read(key: _currentConversationKey);
+    if (currentId == null) return null;
 
-      final conversations = await getConversations();
-      return conversations.where((c) => c.id == currentId).firstOrNull;
-    } catch (e) {
-      return null;
-    }
-  }
-
-  Future<void> saveConversation(Conversation conversation) async {
-    debugPrint(
-        'Saving conversation ${conversation.id} with ${conversation.messages.length} messages');
     final conversations = await getConversations();
-
-    final existingIndex =
-        conversations.indexWhere((c) => c.id == conversation.id);
-    if (existingIndex >= 0) {
-      conversations[existingIndex] = conversation;
-      debugPrint('Updated existing conversation ${conversation.id}');
-    } else {
-      conversations.add(conversation);
-      debugPrint('Added new conversation ${conversation.id}');
+    for (final conversation in conversations) {
+      if (conversation.id == currentId) return conversation;
     }
-
-    final jsonData = conversations.map((c) => c.toJson()).toList();
-    final jsonString = json.encode(jsonData);
-
-    // Validate the JSON before saving
-    try {
-      final decoded = json.decode(jsonString) as List;
-      debugPrint('JSON validation passed: ${decoded.length} conversations');
-    } catch (e) {
-      debugPrint('JSON validation failed: $e');
-    }
-
-    await _storage.write(
-      key: _conversationsKey,
-      value: jsonString,
-    );
-    debugPrint('Saved ${conversations.length} conversations to storage');
+    return null;
   }
 
-  Future<void> setCurrentConversation(String conversationId) async {
-    await _storage.write(key: _currentConversationKey, value: conversationId);
-  }
+  Future<void> setCurrentConversation(String conversationId) =>
+      _prefs.write(key: _currentConversationKey, value: conversationId);
 
-  Future<Conversation> createNewConversation(
-      {String title = 'New Chat'}) async {
-    final id = DateTime.now().millisecondsSinceEpoch.toString();
+  Future<Conversation> createNewConversation({String title = 'New Chat'}) async {
     final now = DateTime.now();
-
     final conversation = Conversation(
-      id: id,
+      id: '${now.millisecondsSinceEpoch}',
       title: title,
-      messages: [],
+      messages: const [],
       createdAt: now,
       updatedAt: now,
     );
 
-    debugPrint('Creating new conversation $id');
-    await saveConversation(conversation);
-    await setCurrentConversation(id);
-    debugPrint('Created and saved new conversation $id');
+    final conversations = [conversation, ...await getConversations()];
+    _cache = conversations;
+    await _persist(conversations);
+    await setCurrentConversation(conversation.id);
     return conversation;
   }
 
+  /// Replaces the messages of [conversationId], retitling it from the first
+  /// user message.
   Future<void> updateConversationMessages(
-      String conversationId, List<Map<String, String>> messages) async {
-    debugPrint(
-        'Updating conversation $conversationId with ${messages.length} messages');
-    final conversations = await getConversations();
+    String conversationId,
+    List<Map<String, String>> messages,
+  ) async {
+    final conversations = [...await getConversations()];
     final index = conversations.indexWhere((c) => c.id == conversationId);
+    final now = DateTime.now();
 
     if (index >= 0) {
-      final conversation = conversations[index];
-      final updatedConversation = conversation.copyWith(
-        messages: messages,
-        updatedAt: DateTime.now(),
+      conversations[index] = conversations[index].copyWith(
+        messages: List.of(messages),
         title: _generateTitle(messages),
-      );
-
-      conversations[index] = updatedConversation;
-      await _storage.write(
-        key: _conversationsKey,
-        value: json.encode(conversations.map((c) => c.toJson()).toList()),
-      );
-      debugPrint('Successfully updated conversation $conversationId');
-    } else {
-      debugPrint(
-          'Conversation $conversationId not found in storage, creating it');
-      // If conversation doesn't exist, create it
-      final now = DateTime.now();
-      final newConversation = Conversation(
-        id: conversationId,
-        title: _generateTitle(messages),
-        messages: messages,
-        createdAt: now,
         updatedAt: now,
       );
-      await saveConversation(newConversation);
+    } else {
+      conversations.add(Conversation(
+        id: conversationId,
+        title: _generateTitle(messages),
+        messages: List.of(messages),
+        createdAt: now,
+        updatedAt: now,
+      ));
     }
+
+    conversations.sort((a, b) => b.updatedAt.compareTo(a.updatedAt));
+    _cache = conversations;
+    await _persist(conversations);
   }
 
   Future<void> deleteConversation(String conversationId) async {
-    final conversations = await getConversations();
-    conversations.removeWhere((c) => c.id == conversationId);
+    final conversations = [...await getConversations()]
+      ..removeWhere((c) => c.id == conversationId);
+    _cache = conversations;
+    await _persist(conversations);
 
-    await _storage.write(
-      key: _conversationsKey,
-      value: json.encode(conversations.map((c) => c.toJson()).toList()),
-    );
-
-    final currentId = await _storage.read(key: _currentConversationKey);
-    if (currentId == conversationId) {
-      await _storage.delete(key: _currentConversationKey);
+    if (await _prefs.read(key: _currentConversationKey) == conversationId) {
+      await _prefs.delete(key: _currentConversationKey);
     }
   }
 
+  /// Removes every stored conversation, used when history saving is turned off.
+  Future<void> deleteAll() async {
+    _cache = [];
+    await _persist(const []);
+    await _prefs.delete(key: _currentConversationKey);
+  }
+
+  /// Waits for queued writes to land. Useful before the app exits.
+  Future<void> flush() => _writeQueue;
+
   String _generateTitle(List<Map<String, String>> messages) {
-    final userMessages = messages.where((m) => m['role'] == 'user');
-    if (userMessages.isEmpty) return 'New Chat';
-
-    final firstMessage = userMessages.first['text'] ?? '';
-    if (firstMessage.length <= 30) return firstMessage;
-
-    return '${firstMessage.substring(0, 30)}...';
+    for (final message in messages) {
+      if (message['role'] != 'user') continue;
+      final text = (message['text'] ?? '').trim();
+      if (text.isEmpty) continue;
+      return text.length <= 40 ? text : '${text.substring(0, 40)}...';
+    }
+    return 'New Chat';
   }
 
   String formatDate(DateTime date) {
-    final now = DateTime.now();
-    final difference = now.difference(date);
-
-    if (difference.inDays == 0) {
-      return DateFormat('HH:mm').format(date);
-    } else if (difference.inDays == 1) {
-      return 'Yesterday';
-    } else if (difference.inDays < 7) {
-      return DateFormat('EEEE').format(date);
-    } else {
-      return DateFormat('MMM d').format(date);
-    }
+    final difference = DateTime.now().difference(date);
+    if (difference.inDays == 0) return DateFormat('HH:mm').format(date);
+    if (difference.inDays == 1) return 'Yesterday';
+    if (difference.inDays < 7) return DateFormat('EEEE').format(date);
+    return DateFormat('MMM d').format(date);
   }
+
+  @visibleForTesting
+  void invalidateCache() => _cache = null;
 }

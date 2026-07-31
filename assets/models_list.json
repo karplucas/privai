@@ -1,157 +1,532 @@
 {
   "llm": [
     {
-      "name": "Gemma3-1B-IT Model",
-      "url": "https://huggingface.co/litert-community/Gemma3-1B-IT/resolve/main/Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm?download=true",
+      "name": "Gemma 3 1B Instruct",
+      "repo": "litert-community/Gemma3-1B-IT",
+      "file": "Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm",
       "filename": "Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm",
       "size": "600MB",
-      "description": "Fast and efficient, good for mobile"
+      "description": "Fast and efficient, good for mobile",
+      "gated": true,
+      "license": "Gemma Terms of Use",
+      "licenseNote": "Google requires you to review and accept the Gemma Terms of Use on Hugging Face before this model can be downloaded."
     },
     {
-      "name": "Gemma-3n-E2B Model",
-      "url": "https://huggingface.co/google/gemma-3n-E2B-it-litert-preview/resolve/main/gemma-3n-E2B-it-int4.task?download=true",
+      "name": "Gemma 3n E2B Instruct",
+      "repo": "google/gemma-3n-E2B-it-litert-preview",
+      "file": "gemma-3n-E2B-it-int4.task",
       "filename": "gemma-3n-E2B-it-int4.task",
-      "size": "1.6GB",
-      "description": "More capable, higher quality responses"
+      "size": "2.9GB",
+      "description": "More capable, higher quality responses",
+      "gated": true,
+      "license": "Gemma Terms of Use",
+      "licenseNote": "Google requires you to review and accept the Gemma Terms of Use on Hugging Face before this model can be downloaded."
     }
   ],
   "tts": [
     {
-      "name": "Kokoro Multi-lang Model",
-      "url": "https://huggingface.co/hexgrad/Kokoro-82M/resolve/main/kokoro-multi-lang-v1_1.onnx?download=true",
-      "filename": "kokoro-multi-lang-v1_1.onnx",
-      "size": "160MB",
-      "description": "High quality voice synthesis"
+      "name": "Kokoro 82M v1.0 (ONNX)",
+      "repo": "thewh1teagle/kokoro-onnx",
+      "file": "kokoro-v1.0.onnx",
+      "url": "https://github.com/thewh1teagle/kokoro-onnx/releases/download/model-files-v1.0/kokoro-v1.0.onnx",
+      "homepage": "https://github.com/thewh1teagle/kokoro-onnx",
+      "filename": "kokoro-v1_0.onnx",
+      "size": "326MB",
+      "description": "High quality multilingual voice synthesis",
+      "gated": false,
+      "license": "Apache-2.0",
+      "engine": "kokoro"
+    },
+    {
+      "name": "Chatterbox Multilingual",
+      "repo": "onnx-community/chatterbox-multilingual-ONNX",
+      "engine": "chatterbox",
+      "directory": "chatterbox-multilingual",
+      "filename": "chatterbox-multilingual",
+      "files": [
+        {
+          "file": "onnx/embed_tokens.onnx"
+        },
+        {
+          "file": "onnx/embed_tokens.onnx_data"
+        },
+        {
+          "file": "onnx/language_model_q4.onnx"
+        },
+        {
+          "file": "onnx/language_model_q4.onnx_data"
+        },
+        {
+          "file": "onnx/speech_encoder.onnx"
+        },
+        {
+          "file": "onnx/speech_encoder.onnx_data"
+        },
+        {
+          "file": "onnx/conditional_decoder.onnx"
+        },
+        {
+          "file": "onnx/conditional_decoder.onnx_data"
+        },
+        {
+          "file": "tokenizer.json"
+        },
+        {
+          "file": "default_voice.wav"
+        }
+      ],
+      "size": "1.6GB",
+      "description": "23 languages and voice cloning; slower and much larger",
+      "gated": false,
+      "license": "MIT"
     }
   ],
   "stt": [
     {
-      "name": "Whisper Base Model",
-      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin?download=true",
+      "name": "Whisper Base (q5_1)",
+      "repo": "ggerganov/whisper.cpp",
+      "file": "ggml-base-q5_1.bin",
       "filename": "ggml-base-q5_1.bin",
-      "size": "150MB",
-      "description": "Good balance of speed and accuracy"
+      "size": "60MB",
+      "description": "Good balance of speed and accuracy",
+      "gated": false,
+      "license": "MIT"
     },
     {
-      "name": "Whisper Small Model",
-      "url": "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin?download=true",
+      "name": "Whisper Small (q5_1)",
+      "repo": "ggerganov/whisper.cpp",
+      "file": "ggml-small-q5_1.bin",
       "filename": "ggml-small-q5_1.bin",
-      "size": "500MB",
-      "description": "Better accuracy for challenging audio"
+      "size": "190MB",
+      "description": "Better accuracy for challenging audio",
+      "gated": false,
+      "license": "MIT"
     },
     {
-      "name": "Whisper Large V3 Turbo",
-      "url": "https://huggingface.co/AI-Engine/Whisper-Q5-GGML/resolve/main/whisper-ggml-large-v3-turbo-q5_0.bin?download=true",
+      "name": "Whisper Large v3 Turbo (q5_0)",
+      "repo": "ggerganov/whisper.cpp",
+      "file": "ggml-large-v3-turbo-q5_0.bin",
       "filename": "ggml-large-v3-turbo-q5_0.bin",
-      "size": "1.5GB",
-      "description": "Best accuracy, fastest processing"
+      "size": "574MB",
+      "description": "Best accuracy, still fast",
+      "gated": false,
+      "license": "MIT"
     }
   ],
   "tts_languages": [
-    {"code": "en-us", "name": "English (US)"},
-    {"code": "en-gb", "name": "English (UK)"},
-    {"code": "ja", "name": "Japanese"},
-    {"code": "cmn", "name": "Chinese"},
-    {"code": "es-419", "name": "Spanish"},
-    {"code": "hi", "name": "Hindi"},
-    {"code": "it", "name": "Italian"},
-    {"code": "pt-br", "name": "Portuguese (Brazil)"}
+    {
+      "code": "en-us",
+      "name": "English (US)"
+    },
+    {
+      "code": "en-gb",
+      "name": "English (UK)"
+    },
+    {
+      "code": "ja",
+      "name": "Japanese"
+    },
+    {
+      "code": "cmn",
+      "name": "Chinese"
+    },
+    {
+      "code": "es-419",
+      "name": "Spanish"
+    },
+    {
+      "code": "hi",
+      "name": "Hindi"
+    },
+    {
+      "code": "it",
+      "name": "Italian"
+    },
+    {
+      "code": "pt-br",
+      "name": "Portuguese (Brazil)"
+    }
   ],
   "stt_languages": [
-    {"code": "auto", "name": "Auto-detect"},
-    {"code": "af", "name": "Afrikaans"},
-    {"code": "am", "name": "Amharic"},
-    {"code": "ar", "name": "Arabic"},
-    {"code": "hy", "name": "Armenian"},
-    {"code": "az", "name": "Azerbaijani"},
-    {"code": "eu", "name": "Basque"},
-    {"code": "be", "name": "Belarusian"},
-    {"code": "bn", "name": "Bengali"},
-    {"code": "bs", "name": "Bosnian"},
-    {"code": "br", "name": "Breton"},
-    {"code": "bg", "name": "Bulgarian"},
-    {"code": "my", "name": "Burmese"},
-    {"code": "ca", "name": "Catalan"},
-    {"code": "zh", "name": "Chinese"},
-    {"code": "hr", "name": "Croatian"},
-    {"code": "cs", "name": "Czech"},
-    {"code": "da", "name": "Danish"},
-    {"code": "nl", "name": "Dutch"},
-    {"code": "en", "name": "English"},
-    {"code": "et", "name": "Estonian"},
-    {"code": "fo", "name": "Faroese"},
-    {"code": "fi", "name": "Finnish"},
-    {"code": "fr", "name": "French"},
-    {"code": "gl", "name": "Galician"},
-    {"code": "ka", "name": "Georgian"},
-    {"code": "de", "name": "German"},
-    {"code": "el", "name": "Greek"},
-    {"code": "gu", "name": "Gujarati"},
-    {"code": "ht", "name": "Haitian Creole"},
-    {"code": "ha", "name": "Hausa"},
-    {"code": "haw", "name": "Hawaiian"},
-    {"code": "he", "name": "Hebrew"},
-    {"code": "hi", "name": "Hindi"},
-    {"code": "hu", "name": "Hungarian"},
-    {"code": "is", "name": "Icelandic"},
-    {"code": "id", "name": "Indonesian"},
-    {"code": "it", "name": "Italian"},
-    {"code": "ja", "name": "Japanese"},
-    {"code": "jv", "name": "Javanese"},
-    {"code": "kn", "name": "Kannada"},
-    {"code": "kk", "name": "Kazakh"},
-    {"code": "km", "name": "Khmer"},
-    {"code": "ko", "name": "Korean"},
-    {"code": "lo", "name": "Lao"},
-    {"code": "la", "name": "Latin"},
-    {"code": "lv", "name": "Latvian"},
-    {"code": "ln", "name": "Lingala"},
-    {"code": "lt", "name": "Lithuanian"},
-    {"code": "lb", "name": "Luxembourgish"},
-    {"code": "mk", "name": "Macedonian"},
-    {"code": "mg", "name": "Malagasy"},
-    {"code": "ms", "name": "Malay"},
-    {"code": "ml", "name": "Malayalam"},
-    {"code": "mt", "name": "Maltese"},
-    {"code": "mi", "name": "Maori"},
-    {"code": "mr", "name": "Marathi"},
-    {"code": "mn", "name": "Mongolian"},
-    {"code": "ne", "name": "Nepali"},
-    {"code": "no", "name": "Norwegian"},
-    {"code": "oc", "name": "Occitan"},
-    {"code": "fa", "name": "Persian"},
-    {"code": "pl", "name": "Polish"},
-    {"code": "pt", "name": "Portuguese"},
-    {"code": "pa", "name": "Punjabi"},
-    {"code": "ro", "name": "Romanian"},
-    {"code": "ru", "name": "Russian"},
-    {"code": "sa", "name": "Sanskrit"},
-    {"code": "sr", "name": "Serbian"},
-    {"code": "sn", "name": "Shona"},
-    {"code": "sd", "name": "Sindhi"},
-    {"code": "si", "name": "Sinhala"},
-    {"code": "sk", "name": "Slovak"},
-    {"code": "sl", "name": "Slovenian"},
-    {"code": "so", "name": "Somali"},
-    {"code": "es", "name": "Spanish"},
-    {"code": "su", "name": "Sundanese"},
-    {"code": "sw", "name": "Swahili"},
-    {"code": "sv", "name": "Swedish"},
-    {"code": "tl", "name": "Tagalog"},
-    {"code": "tg", "name": "Tajik"},
-    {"code": "ta", "name": "Tamil"},
-    {"code": "tt", "name": "Tatar"},
-    {"code": "te", "name": "Telugu"},
-    {"code": "th", "name": "Thai"},
-    {"code": "bo", "name": "Tibetan"},
-    {"code": "tr", "name": "Turkish"},
-    {"code": "tk", "name": "Turkmen"},
-    {"code": "uk", "name": "Ukrainian"},
-    {"code": "ur", "name": "Urdu"},
-    {"code": "uz", "name": "Uzbek"},
-    {"code": "vi", "name": "Vietnamese"},
-    {"code": "cy", "name": "Welsh"},
-    {"code": "yi", "name": "Yiddish"},
-    {"code": "yo", "name": "Yoruba"}
+    {
+      "code": "auto",
+      "name": "Auto-detect"
+    },
+    {
+      "code": "af",
+      "name": "Afrikaans"
+    },
+    {
+      "code": "am",
+      "name": "Amharic"
+    },
+    {
+      "code": "ar",
+      "name": "Arabic"
+    },
+    {
+      "code": "hy",
+      "name": "Armenian"
+    },
+    {
+      "code": "az",
+      "name": "Azerbaijani"
+    },
+    {
+      "code": "eu",
+      "name": "Basque"
+    },
+    {
+      "code": "be",
+      "name": "Belarusian"
+    },
+    {
+      "code": "bn",
+      "name": "Bengali"
+    },
+    {
+      "code": "bs",
+      "name": "Bosnian"
+    },
+    {
+      "code": "br",
+      "name": "Breton"
+    },
+    {
+      "code": "bg",
+      "name": "Bulgarian"
+    },
+    {
+      "code": "my",
+      "name": "Burmese"
+    },
+    {
+      "code": "ca",
+      "name": "Catalan"
+    },
+    {
+      "code": "zh",
+      "name": "Chinese"
+    },
+    {
+      "code": "hr",
+      "name": "Croatian"
+    },
+    {
+      "code": "cs",
+      "name": "Czech"
+    },
+    {
+      "code": "da",
+      "name": "Danish"
+    },
+    {
+      "code": "nl",
+      "name": "Dutch"
+    },
+    {
+      "code": "en",
+      "name": "English"
+    },
+    {
+      "code": "et",
+      "name": "Estonian"
+    },
+    {
+      "code": "fo",
+      "name": "Faroese"
+    },
+    {
+      "code": "fi",
+      "name": "Finnish"
+    },
+    {
+      "code": "fr",
+      "name": "French"
+    },
+    {
+      "code": "gl",
+      "name": "Galician"
+    },
+    {
+      "code": "ka",
+      "name": "Georgian"
+    },
+    {
+      "code": "de",
+      "name": "German"
+    },
+    {
+      "code": "el",
+      "name": "Greek"
+    },
+    {
+      "code": "gu",
+      "name": "Gujarati"
+    },
+    {
+      "code": "ht",
+      "name": "Haitian Creole"
+    },
+    {
+      "code": "ha",
+      "name": "Hausa"
+    },
+    {
+      "code": "haw",
+      "name": "Hawaiian"
+    },
+    {
+      "code": "he",
+      "name": "Hebrew"
+    },
+    {
+      "code": "hi",
+      "name": "Hindi"
+    },
+    {
+      "code": "hu",
+      "name": "Hungarian"
+    },
+    {
+      "code": "is",
+      "name": "Icelandic"
+    },
+    {
+      "code": "id",
+      "name": "Indonesian"
+    },
+    {
+      "code": "it",
+      "name": "Italian"
+    },
+    {
+      "code": "ja",
+      "name": "Japanese"
+    },
+    {
+      "code": "jv",
+      "name": "Javanese"
+    },
+    {
+      "code": "kn",
+      "name": "Kannada"
+    },
+    {
+      "code": "kk",
+      "name": "Kazakh"
+    },
+    {
+      "code": "km",
+      "name": "Khmer"
+    },
+    {
+      "code": "ko",
+      "name": "Korean"
+    },
+    {
+      "code": "lo",
+      "name": "Lao"
+    },
+    {
+      "code": "la",
+      "name": "Latin"
+    },
+    {
+      "code": "lv",
+      "name": "Latvian"
+    },
+    {
+      "code": "ln",
+      "name": "Lingala"
+    },
+    {
+      "code": "lt",
+      "name": "Lithuanian"
+    },
+    {
+      "code": "lb",
+      "name": "Luxembourgish"
+    },
+    {
+      "code": "mk",
+      "name": "Macedonian"
+    },
+    {
+      "code": "mg",
+      "name": "Malagasy"
+    },
+    {
+      "code": "ms",
+      "name": "Malay"
+    },
+    {
+      "code": "ml",
+      "name": "Malayalam"
+    },
+    {
+      "code": "mt",
+      "name": "Maltese"
+    },
+    {
+      "code": "mi",
+      "name": "Maori"
+    },
+    {
+      "code": "mr",
+      "name": "Marathi"
+    },
+    {
+      "code": "mn",
+      "name": "Mongolian"
+    },
+    {
+      "code": "ne",
+      "name": "Nepali"
+    },
+    {
+      "code": "no",
+      "name": "Norwegian"
+    },
+    {
+      "code": "oc",
+      "name": "Occitan"
+    },
+    {
+      "code": "fa",
+      "name": "Persian"
+    },
+    {
+      "code": "pl",
+      "name": "Polish"
+    },
+    {
+      "code": "pt",
+      "name": "Portuguese"
+    },
+    {
+      "code": "pa",
+      "name": "Punjabi"
+    },
+    {
+      "code": "ro",
+      "name": "Romanian"
+    },
+    {
+      "code": "ru",
+      "name": "Russian"
+    },
+    {
+      "code": "sa",
+      "name": "Sanskrit"
+    },
+    {
+      "code": "sr",
+      "name": "Serbian"
+    },
+    {
+      "code": "sn",
+      "name": "Shona"
+    },
+    {
+      "code": "sd",
+      "name": "Sindhi"
+    },
+    {
+      "code": "si",
+      "name": "Sinhala"
+    },
+    {
+      "code": "sk",
+      "name": "Slovak"
+    },
+    {
+      "code": "sl",
+      "name": "Slovenian"
+    },
+    {
+      "code": "so",
+      "name": "Somali"
+    },
+    {
+      "code": "es",
+      "name": "Spanish"
+    },
+    {
+      "code": "su",
+      "name": "Sundanese"
+    },
+    {
+      "code": "sw",
+      "name": "Swahili"
+    },
+    {
+      "code": "sv",
+      "name": "Swedish"
+    },
+    {
+      "code": "tl",
+      "name": "Tagalog"
+    },
+    {
+      "code": "tg",
+      "name": "Tajik"
+    },
+    {
+      "code": "ta",
+      "name": "Tamil"
+    },
+    {
+      "code": "tt",
+      "name": "Tatar"
+    },
+    {
+      "code": "te",
+      "name": "Telugu"
+    },
+    {
+      "code": "th",
+      "name": "Thai"
+    },
+    {
+      "code": "bo",
+      "name": "Tibetan"
+    },
+    {
+      "code": "tr",
+      "name": "Turkish"
+    },
+    {
+      "code": "tk",
+      "name": "Turkmen"
+    },
+    {
+      "code": "uk",
+      "name": "Ukrainian"
+    },
+    {
+      "code": "ur",
+      "name": "Urdu"
+    },
+    {
+      "code": "uz",
+      "name": "Uzbek"
+    },
+    {
+      "code": "vi",
+      "name": "Vietnamese"
+    },
+    {
+      "code": "cy",
+      "name": "Welsh"
+    },
+    {
+      "code": "yi",
+      "name": "Yiddish"
+    },
+    {
+      "code": "yo",
+      "name": "Yoruba"
+    }
   ]
 }

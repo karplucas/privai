@@ -20,11 +20,22 @@ build/
 # -----------------------------------------------------------------------------
 # Models are too large for standard Git
 *.task
+*.litertlm
 *.bin
+*.onnx
 assets/models/
 # TTS and large media
 assets/tts/
 assets/audio/
+
+# Kokoro voice style vectors, if you choose to bundle the whole table instead
+# of letting VoicePackService download per-voice files at runtime. Optional.
+
+assets/voices.json
+
+# assets/tokenizer_vocab.json and assets/lexicon.json are deliberately NOT
+# ignored: they are a couple of KB, the package can only read them as assets,
+# and without them text-to-speech cannot start.
 
 # -----------------------------------------------------------------------------
 # Android

@@ -47,14 +47,25 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs microphone access for speech-to-text functionality.</string>
+	<!-- Receives the Hugging Face OAuth redirect. Must match
+	     HuggingFaceService.callbackScheme. -->
 	<key>CFBundleURLTypes</key>
 	<array>
 		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.LucasKarpinski.privai.oauth</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
-				<string>app</string>
+				<string>privai</string>
 			</array>
 		</dict>
+	</array>
+	<!-- Lets url_launcher open the Hugging Face model page where the Gemma
+	     terms are presented. -->
+	<key>LSApplicationQueriesSchemes</key>
+	<array>
+		<string>https</string>
+		<string>http</string>
 	</array>
 </dict>
 </plist>

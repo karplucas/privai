@@ -122,7 +122,7 @@ packages:
     source: hosted
     version: "1.19.1"
   crypto:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: crypto
       sha256: c8ea0233063ba03258fbcf2ca4d6dadfefe14f02fab57702265467a19f27fadf
@@ -212,7 +212,7 @@ packages:
     source: hosted
     version: "4.0.0"
   flutter_onnxruntime:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: flutter_onnxruntime
       sha256: "8e1517462cc829d4cafc49702bf11d8a3946be608ca5907d37bf713eb6490231"
@@ -853,7 +853,7 @@ packages:
     source: hosted
     version: "2.3.1"
   url_launcher:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: url_launcher
       sha256: f6a7e5c4835bb4e3026a04793a4199ca2d14c739ec378fdfe23fc8075d0439f8

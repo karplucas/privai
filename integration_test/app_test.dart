@@ -2,160 +2,99 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:privai/main.dart';
+import 'package:privai/ui/models_page.dart';
 
+/// On-device smoke tests.
+///
+/// These run against real plugins on a real device, so they cover the parts of
+/// the app that work without a downloaded model: start-up, navigation, settings
+/// persistence and the model list. Sending a message and expecting a reply is
+/// deliberately not asserted — that needs multi-gigabyte weights and an accepted
+/// Gemma license, which is not something a test run should assume.
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
-  group('End-to-End Chatbot Tests', () {
-    testWidgets('Complete chat session with multiple interactions',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
+  Future<void> launch(WidgetTester tester) async {
+    await tester.pumpWidget(const MyApp());
+    await tester.pumpAndSettle(const Duration(seconds: 10));
+  }
 
-      // Wait for app initialization
-      await tester.pumpAndSettle(const Duration(seconds: 10));
+  group('App start-up', () {
+    testWidgets('reaches the chat screen', (tester) async {
+      await launch(tester);
 
-      // Verify initial state
       expect(find.text('PrivAI'), findsOneWidget);
       expect(find.byType(TextField), findsOneWidget);
       expect(find.byIcon(Icons.send), findsOneWidget);
-      expect(find.byIcon(Icons.mic), findsOneWidget);
-
-      // Send first message
-      await tester.enterText(find.byType(TextField), 'Hello, can you help me?');
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      // Verify user message appears
-      expect(find.text('You'), findsWidgets);
-      expect(find.text('Hello, can you help me?'), findsOneWidget);
-
-      // Send second message
-      await tester.enterText(
-          find.byType(TextField), 'What languages do you support?');
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      // Verify second message
-      expect(find.text('What languages do you support?'), findsOneWidget);
-
-      // Test recording functionality
-      await tester.tap(find.byIcon(Icons.mic));
-      await tester.pump(const Duration(milliseconds: 500));
-      expect(find.byIcon(Icons.stop), findsOneWidget);
-
-      // Stop recording
-      await tester.tap(find.byIcon(Icons.stop));
-      await tester.pump(const Duration(milliseconds: 500));
-      expect(find.byIcon(Icons.mic), findsOneWidget);
-
-      // Send a farewell message
-      await tester.enterText(find.byType(TextField), 'Thank you!');
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pumpAndSettle(const Duration(seconds: 3));
-
-      expect(find.text('Thank you!'), findsOneWidget);
     });
 
-    testWidgets('UI responsiveness and layout', (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
+    testWidgets('composer accepts and retains typed text', (tester) async {
+      await launch(tester);
 
-      // Test in different screen sizes/orientations would go here
-      // For now, just verify basic layout works
+      const message = 'Hello, can you help me?';
+      await tester.enterText(find.byType(TextField), message);
+      await tester.pump();
 
-      final screenSize = tester.getSize(find.byType(Scaffold));
-
-      // Verify the UI fits the screen
-      expect(screenSize.width, greaterThan(0));
-      expect(screenSize.height, greaterThan(0));
-
-      // Verify all main UI elements are present
-      expect(find.byType(AppBar), findsOneWidget);
-      expect(find.byType(ListView), findsOneWidget);
-      expect(find.byType(TextField), findsOneWidget);
-      expect(find.byType(IconButton), findsNWidgets(2)); // Send and Mic buttons
+      expect(find.text(message), findsOneWidget);
     });
 
-    testWidgets('Message history persistence during session',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
+    testWidgets('handles a landscape resize without overflowing',
+        (tester) async {
+      await launch(tester);
+
+      await tester.binding.setSurfaceSize(const Size(800, 400));
+      await tester.pumpAndSettle();
+      expect(tester.takeException(), isNull);
+
+      await tester.binding.setSurfaceSize(null);
+      await tester.pumpAndSettle();
+    });
+  });
+
+  group('Navigation', () {
+    testWidgets('opens the settings page from the drawer', (tester) async {
+      await launch(tester);
+
+      tester.state<ScaffoldState>(find.byType(Scaffold).first).openDrawer();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+
+      await tester.tap(find.text('Settings & models'));
       await tester.pumpAndSettle(const Duration(seconds: 5));
 
-      // Send multiple messages
-      const messages = ['First message', 'Second message', 'Third message'];
-
-      for (final message in messages) {
-        await tester.enterText(find.byType(TextField), message);
-        await tester.tap(find.byIcon(Icons.send));
-        await tester.pumpAndSettle(const Duration(seconds: 2));
-      }
-
-      // Verify all messages are still visible
-      for (final message in messages) {
-        expect(find.text(message), findsOneWidget);
-      }
-
-      // Verify message count
-      expect(find.text('You'), findsNWidgets(3));
+      expect(find.byType(ModelsPage), findsOneWidget);
+      expect(find.text('Hugging Face account'), findsOneWidget);
     });
 
-    testWidgets('Input validation and error handling',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
+    testWidgets('lists the gated Gemma models with a license gate',
+        (tester) async {
+      await launch(tester);
+
+      tester.state<ScaffoldState>(find.byType(Scaffold).first).openDrawer();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Settings & models'));
       await tester.pumpAndSettle(const Duration(seconds: 5));
 
-      // Test sending empty message
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
+      expect(find.textContaining('Gemma'), findsWidgets);
 
-      // Should not add empty message
-      expect(find.text('You'), findsNothing);
-
-      // Test sending whitespace-only message
-      await tester.enterText(find.byType(TextField), '   ');
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
-
-      // Should not add whitespace-only message
-      expect(find.text('You'), findsNothing);
-
-      // Test sending valid message
-      await tester.enterText(find.byType(TextField), 'Valid message');
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
-
-      // Should add valid message
-      expect(find.text('You'), findsOneWidget);
-      expect(find.text('Valid message'), findsOneWidget);
+      // Without a signed-in account no gated model may offer a download button.
+      expect(find.widgetWithText(FilledButton, 'Download'), findsNothing);
     });
 
-    testWidgets('Audio recording UI feedback', (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
+    testWidgets('returns to the chat screen', (tester) async {
+      await launch(tester);
+
+      tester.state<ScaffoldState>(find.byType(Scaffold).first).openDrawer();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 400));
+      await tester.tap(find.text('Settings & models'));
       await tester.pumpAndSettle(const Duration(seconds: 5));
 
-      // Initially not recording
-      expect(find.byIcon(Icons.mic), findsOneWidget);
-      expect(find.byIcon(Icons.stop), findsNothing);
+      await tester.pageBack();
+      await tester.pumpAndSettle(const Duration(seconds: 5));
 
-      // Start recording
-      await tester.tap(find.byIcon(Icons.mic));
-      await tester.pump();
-
-      // Should show recording state
-      expect(find.byIcon(Icons.stop), findsOneWidget);
-      expect(find.byIcon(Icons.mic), findsNothing);
-
-      // The stop button should be red (recording indicator)
-      final stopButton = tester.widget<IconButton>(find.byIcon(Icons.stop));
-      expect(stopButton.color, Colors.red);
-
-      // Stop recording
-      await tester.tap(find.byIcon(Icons.stop));
-      await tester.pump();
-
-      // Should return to normal state
-      expect(find.byIcon(Icons.mic), findsOneWidget);
-      expect(find.byIcon(Icons.stop), findsNothing);
+      expect(find.text('PrivAI'), findsOneWidget);
     });
   });
 }

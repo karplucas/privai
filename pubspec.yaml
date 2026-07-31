@@ -12,6 +12,9 @@ dependencies:
   flutter:
     sdk: flutter
   flutter_gemma: ^0.11.13
+  # Chatterbox runs its ONNX graphs directly; also a transitive dep of
+  # kokoro_tts_flutter, declared here because we import it.
+  flutter_onnxruntime: ^1.6.1
   whisper_ggml: ^1.7.0
   path_provider: ^2.1.1
   audioplayers: ^5.2.1
@@ -22,6 +25,10 @@ dependencies:
   flutter_web_auth_2: ^4.1.0
   intl: ^0.18.1
   permission_handler: ^11.0.1
+  # Opens the Hugging Face model page so the user can accept the Gemma terms.
+  url_launcher: ^6.2.0
+  # PKCE code challenge for the Hugging Face OAuth flow.
+  crypto: ^3.0.3
 
 dev_dependencies:
   flutter_test:
@@ -34,11 +41,16 @@ dev_dependencies:
 flutter:
   uses-material-design: true
 
+  # Declared as a directory rather than as individual files on purpose. The
+  # Kokoro voice assets (kokoro.onnx, voices.json, tokenizer_vocab.json,
+  # lexicon.json) are too large for git and are not tracked, so naming them
+  # individually makes `flutter build` fail outright on any checkout that does
+  # not have them. A directory entry bundles whatever is present.
+  #
+  # Required for text-to-speech (see README):
+  #   assets/kokoro.onnx             ONNX voice model
+  #   assets/voices.json             voice style vectors
+  #   assets/tokenizer_vocab.json    phoneme -> token id map
+  #   assets/lexicon.json            optional pronunciation overrides
   assets:
-    - assets/kokoro.onnx
-    - assets/voices.json
-    - assets/lexicon.json
-    - assets/tokenizer_vocab.json
-    - assets/us_gold.json
-    - assets/us_silver.json
-    - assets/models_list.json
+    - assets/

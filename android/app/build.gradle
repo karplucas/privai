@@ -1,5 +1,5 @@
 plugins {
-    id "com.android.application" version "8.11.1"
+    id "com.android.application"
     id "kotlin-android"
     id "dev.flutter.flutter-gradle-plugin"
 }
@@ -12,30 +12,14 @@ if (localPropertiesFile.exists()) {
     }
 }
 
-def flutterVersionCode = localProperties.getProperty('flutter.versionCode')
-if (flutterVersionCode == null) {
-    flutterVersionCode = '1'
-}
-
-def flutterVersionName = localProperties.getProperty('flutter.versionName')
-if (flutterVersionName == null) {
-    flutterVersionName = '1.0'
-}
-
-repositories {
-    google()
-    mavenCentral()
-    gradlePluginPortal()
-}
+def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
+def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0'
 
 android {
+    // Matches the package declared by MainActivity.kt.
     namespace "com.example.privai"
     compileSdk flutter.compileSdkVersion
     ndkVersion "29.0.13113456"
-
-    aaptOptions {
-        noCompress 'task'
-    }
 
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
@@ -44,29 +28,26 @@ android {
 
     kotlinOptions {
         jvmTarget = '17'
-        freeCompilerArgs += ['-Xjvm-target=17']
     }
 
     sourceSets {
         main.java.srcDirs += 'src/main/kotlin'
     }
 
+    androidResources {
+        // MediaPipe memory-maps .task/.litertlm bundles, so they must not be
+        // compressed inside the APK.
+        noCompress += ['task', 'litertlm', 'bin', 'onnx']
+    }
+
     packagingOptions {
         pickFirst '**/libc++_shared.so'
         pickFirst '**/libjsc.so'
-        
-        // Exclude large model files from APK compression
-        doNotStrip "*.onnx"
-        doNotStrip "*.bin"
-        doNotStrip "voices.json"
     }
 
     defaultConfig {
-        // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId "com.LucasKarpinski.privai"
-        // You can update the following values to match your application needs.
-        // For more information, see: https://docs.flutter.dev/deployment/android#reviewing-the-gradle-build-configuration.
-        minSdkVersion flutter.minSdkVersion
+        minSdkVersion 26
         targetSdkVersion flutter.targetSdkVersion
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
@@ -76,39 +57,18 @@ android {
         release {
             minifyEnabled false
             shrinkResources false
-            // TODO: Add your own signing config for release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
+            // TODO: Replace with a real signing config before publishing.
             signingConfig signingConfigs.debug
             proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
+}
 
-    tasks.register("syncFlutterApks", Copy) {
-        // 1. Where AGP 8 puts it
-        def flutterOutDir = file("$buildDir/outputs/apk/debug")
-        // 2. Where the Flutter tool looks for it
-        def cliOutDir = new File(rootDir.parentFile, "build/app/outputs/flutter-apk")
+flutter {
+    source '../..'
+}
 
-        from(flutterOutDir)
-        into(cliOutDir)
-        include("app-debug.apk")
-
-        rename { String fileName ->
-            // Flutter tool specifically looks for this name
-            return "app-debug.apk"
-        }
-
-        doFirst {
-            cliOutDir.mkdirs()
-        }
-    }
-
-    flutter {
-        source '../..'
-    }
-
-    dependencies {
-        implementation 'com.google.mediapipe:tasks-genai:0.10.29'
-        implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
-    }
+dependencies {
+    implementation 'com.google.mediapipe:tasks-genai:0.10.29'
+    implementation "org.jetbrains.kotlinx:kotlinx-coroutines-android:1.7.3"
 }

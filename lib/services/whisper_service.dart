@@ -1,78 +1,97 @@
 import 'dart:io';
+
 import 'package:flutter/foundation.dart';
-import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path_provider/path_provider.dart';
-import 'package:whisper_ggml/whisper_ggml.dart';
 import 'package:record/record.dart';
+import 'package:whisper_ggml/whisper_ggml.dart';
 
+import 'app_settings.dart';
+import 'model_storage.dart';
+
+/// Raised when transcription is attempted before a model is available.
+class WhisperNotReadyException implements Exception {
+  const WhisperNotReadyException(this.reason);
+
+  final String reason;
+
+  @override
+  String toString() => reason;
+}
+
+/// Records microphone audio and transcribes it with whisper.cpp.
 class WhisperService {
-  static WhisperService? _instance;
-  final WhisperController _whisperController = WhisperController();
-  final AudioRecorder _audioRecorder = AudioRecorder();
-
-  late WhisperModel _activeModel;
-  bool _isInitialized = false;
-  bool _isInitializing = false;
-
+  static final WhisperService _instance = WhisperService._();
+  factory WhisperService() => _instance;
   WhisperService._();
 
-  static WhisperService get instance {
-    _instance ??= WhisperService._();
-    return _instance!;
+  /// Kept for the existing `WhisperService.instance` call sites.
+  static WhisperService get instance => _instance;
+
+  final WhisperController _whisperController = WhisperController();
+  final AudioRecorder _audioRecorder = AudioRecorder();
+  final AppSettings _settings = AppSettings();
+  final ModelStorage _storage = ModelStorage();
+
+  WhisperModel? _activeModel;
+  Future<void>? _initialization;
+
+  bool get isReady => _activeModel != null;
+
+  /// Prepares the transcription model, reusing an in-flight initialisation.
+  ///
+  /// The previous implementation returned early while initialisation was still
+  /// running, so a caller could proceed as though the model were loaded.
+  Future<void> initialize({bool force = false}) {
+    if (force) _initialization = null;
+    return _initialization ??= _initialize();
   }
 
-  Future<void> initialize() async {
-    if (_isInitialized || _isInitializing) return;
-    _isInitializing = true;
-
+  Future<void> _initialize() async {
     try {
-      // 1. Get the filename you specified
-      final selectedFilename =
-          await _getSelectedModelFilename() ?? 'ggml-base-q5_1.bin';
-      _activeModel = _getModelFromFilename(selectedFilename);
+      final filename = await _settings.selectedSttModel;
+      if (filename == null || filename.isEmpty) {
+        throw const WhisperNotReadyException(
+          'No speech-to-text model is selected. Open Manage Models to pick one.',
+        );
+      }
 
-      // 2. Identify the Internal "Fast Path" for this model
-      final pluginPath = await _whisperController.getPath(_activeModel);
-      final pluginFile = File(pluginPath);
+      final model = _modelFromFilename(filename);
 
-      // 3. Move the file from SD card to Internal if missing
+      // whisper_ggml keeps its own copy in app-internal storage. If our
+      // downloaded file is there but the plugin's is not, hand it over instead
+      // of downloading the same weights a second time.
+      final pluginFile = File(await _whisperController.getPath(model));
       if (!await pluginFile.exists()) {
-        final sdCardPath =
-            '/sdcard/Android/data/com.LucasKarpinski.privai/files/$selectedFilename';
-        final sdCardFile = File(sdCardPath);
-
-        if (await sdCardFile.exists()) {
-          debugPrint('⚡ Optimizing model storage for $selectedFilename...');
-          await Directory(pluginFile.parent.path).create(recursive: true);
-
-          // Using byte streams to safely transfer the large model
+        final downloaded = File(await _storage.pathFor(filename));
+        if (await downloaded.exists()) {
+          debugPrint('WhisperService: importing $filename into plugin storage');
+          await pluginFile.parent.create(recursive: true);
           final sink = pluginFile.openWrite();
-          await sink.addStream(sdCardFile.openRead());
-          await sink.close();
-
-          debugPrint('✅ Model optimized in internal storage.');
+          try {
+            await sink.addStream(downloaded.openRead());
+          } finally {
+            await sink.close();
+          }
         } else {
-          debugPrint(
-              '🌐 Model not found on SD card, calling plugin downloader.');
-          await _whisperController.downloadModel(_activeModel);
+          throw WhisperNotReadyException(
+            'The speech-to-text model "$filename" has not been downloaded yet. '
+            'Open Manage Models to download it.',
+          );
         }
       }
 
-      _isInitialized = true;
-      debugPrint('🚀 Whisper Ready with $_activeModel');
+      _activeModel = model;
+      debugPrint('WhisperService: ready with ${model.name}');
     } catch (e) {
-      debugPrint('❌ Whisper Initialization Error: $e');
-    } finally {
-      _isInitializing = false;
+      // Allow a later attempt to retry rather than caching the failure.
+      _activeModel = null;
+      _initialization = null;
+      debugPrint('WhisperService: initialisation failed: $e');
+      rethrow;
     }
   }
 
-  Future<String?> _getSelectedModelFilename() async {
-    const storage = FlutterSecureStorage();
-    return await storage.read(key: 'selected_stt_model');
-  }
-
-  WhisperModel _getModelFromFilename(String filename) {
+  WhisperModel _modelFromFilename(String filename) {
     final name = filename.toLowerCase();
     if (name.contains('tiny')) return WhisperModel.tiny;
     if (name.contains('base')) return WhisperModel.base;
@@ -81,75 +100,86 @@ class WhisperService {
     return WhisperModel.large;
   }
 
-  Future<String> transcribeFromFile(String audioPath,
-      {String? language}) async {
-    if (!_isInitialized) await initialize();
-
-    try {
-      final file = File(audioPath);
-      if (!await file.exists() || await file.length() < 100) {
-        throw Exception("Audio file is missing or empty.");
-      }
-
-      debugPrint('🎙️ Transcribing: $audioPath');
-      final result = await _whisperController.transcribe(
-        model: _activeModel,
-        audioPath: audioPath,
-        lang: language ?? 'auto',
+  /// Transcribes the WAV file at [audioPath].
+  ///
+  /// When [language] is omitted the user's configured STT language is used —
+  /// previously that setting was stored but never reached this call, so every
+  /// transcription ran in auto-detect mode.
+  Future<String> transcribeFromFile(String audioPath, {String? language}) async {
+    await initialize();
+    final model = _activeModel;
+    if (model == null) {
+      throw const WhisperNotReadyException(
+        'The speech-to-text model is not ready.',
       );
-
-      return result?.transcription.text.trim() ?? '';
-    } catch (e) {
-      debugPrint('❌ Transcription Error: $e');
-      return "Transcription failed.";
     }
+
+    final file = File(audioPath);
+    if (!await file.exists() || await file.length() < 1000) {
+      throw const WhisperNotReadyException(
+        'The recording was too short to transcribe.',
+      );
+    }
+
+    debugPrint('WhisperService: transcribing $audioPath');
+    final result = await _whisperController.transcribe(
+      model: model,
+      audioPath: audioPath,
+      lang: language ?? await _settings.sttLanguage,
+    );
+
+    return result?.transcription.text.trim() ?? '';
   }
 
+  /// Starts recording 16 kHz mono WAV, the format whisper.cpp consumes
+  /// directly.
   Future<String> startRecording() async {
     if (!await _audioRecorder.hasPermission()) {
-      throw Exception('Microphone permission not granted');
+      throw const WhisperNotReadyException(
+        'Microphone permission is required to record.',
+      );
     }
 
-    final Directory tempDir = await getTemporaryDirectory();
-    final String path =
+    final tempDir = await getTemporaryDirectory();
+    final path =
         '${tempDir.path}/rec_${DateTime.now().millisecondsSinceEpoch}.wav';
 
-    debugPrint('🎤 Recording 16kHz Mono...');
-    // We use EXACT parameters required by Whisper to avoid conversion lag
     await _audioRecorder.start(
       const RecordConfig(
         encoder: AudioEncoder.wav,
         sampleRate: 16000,
         numChannels: 1,
-        bitRate: 128000,
       ),
       path: path,
     );
     return path;
   }
 
+  /// Stops recording and returns the file path, or null if nothing usable was
+  /// captured.
   Future<String?> stopRecording() async {
     final path = await _audioRecorder.stop();
-    if (path != null) {
-      final file = File(path);
+    if (path == null) return null;
 
-      // Give the OS time to finish writing the WAV header
-      int waitCycles = 0;
-      while (waitCycles < 10 &&
-          (!await file.exists() || await file.length() < 1000)) {
-        await Future.delayed(const Duration(milliseconds: 50));
-        waitCycles++;
-      }
+    final file = File(path);
 
+    // Wait briefly for the OS to finish flushing the WAV header.
+    for (var attempt = 0; attempt < 10; attempt++) {
       if (await file.exists() && await file.length() > 1000) {
-        debugPrint('⏹️ Recording saved: ${await file.length()} bytes');
+        debugPrint('WhisperService: recorded ${await file.length()} bytes');
         return path;
       }
+      await Future<void>.delayed(const Duration(milliseconds: 50));
     }
+
+    debugPrint('WhisperService: recording was empty, discarding');
+    if (await file.exists()) await file.delete();
     return null;
   }
 
-  void dispose() {
-    _audioRecorder.dispose();
-  }
+  Future<bool> get isRecording => _audioRecorder.isRecording();
+
+  /// Releases the recorder. Only call when the app is shutting down — this is a
+  /// singleton shared across screens.
+  Future<void> dispose() => _audioRecorder.dispose();
 }

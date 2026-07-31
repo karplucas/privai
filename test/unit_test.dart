@@ -1,249 +1,218 @@
-import 'package:flutter/material.dart';
+import 'dart:io';
+
 import 'package:flutter_test/flutter_test.dart';
-import 'package:privai/main.dart';
+import 'package:privai/services/app_settings.dart';
+import 'package:privai/services/conversation_service.dart';
+import 'package:privai/services/model_storage.dart';
+
+import 'test_harness.dart';
 
 void main() {
-  group('Chatbot App Core Functionality Tests', () {
-    test('MyApp widget can be instantiated', () {
-      const app = MyApp();
-      expect(app, isA<MyApp>());
+  group('AppSettings defaults', () {
+    late FakePlatform platform;
+
+    setUp(() {
+      platform = FakePlatform.install();
     });
 
-    test('ChatScreen widget can be instantiated', () {
-      final chatScreen = ChatScreen(themeToggleCallback: () {});
-      expect(chatScreen, isA<ChatScreen>());
+    test('voice features default to on when nothing is stored', () async {
+      // Regression: these keys used to be compared against the string 'true' at
+      // each call site, so an absent key resolved to false and a fresh install
+      // came up with speech silently disabled.
+      final settings = AppSettings();
+      expect(await settings.ttsEnabled, isTrue);
+      expect(await settings.sttEnabled, isTrue);
+      expect(await settings.saveChatHistory, isTrue);
     });
 
-    test('Supported languages list is valid', () {
-      // Test the languages that Whisper supports
-      final supportedLanguages = [
-        'en',
-        'es',
-        'fr',
-        'de',
-        'it',
-        'pt',
-        'ru',
-        'ja',
-        'zh',
-        'ko',
-        'ar',
-        'hi'
-      ];
-
-      for (final lang in supportedLanguages) {
-        expect(lang.length, equals(2));
-        expect(lang, matches(r'^[a-z]{2,3}$'));
-      }
+    test('stored booleans round-trip', () async {
+      final settings = AppSettings();
+      await settings.setTtsEnabled(false);
+      expect(await settings.ttsEnabled, isFalse);
+      await settings.setTtsEnabled(true);
+      expect(await settings.ttsEnabled, isTrue);
     });
 
-    test('Text message validation works', () {
-      // Test various message inputs
-      expect(_isValidMessage('Hello AI'), isTrue);
-      expect(_isValidMessage(''), isFalse);
-      expect(_isValidMessage('   '), isFalse);
-      expect(_isValidMessage(null), isFalse);
+    test('numeric settings are clamped to a usable range', () async {
+      final settings = AppSettings();
+
+      await settings.setTemperature(99);
+      expect(await settings.temperature, 2.0);
+
+      await settings.setMaxTokens(1);
+      expect(await settings.maxTokens, 256);
     });
 
-    test('Audio file path generation is correct', () {
-      const tempPath = '/tmp/audio.wav';
-      expect(tempPath.endsWith('.wav'), isTrue);
-      expect(tempPath.contains('audio'), isTrue);
+    test('corrupt numeric values fall back to the default', () async {
+      platform.secureStorage['llm_temperature'] = 'not a number';
+      expect(await AppSettings().temperature, AppSettings.defaultTemperature);
     });
 
-    test('Kokoro TTS model configuration', () {
-      // Test that Kokoro model paths are correctly configured
-      final modelConfig = {
-        'model': 'assets/tts/kokoro-multi-lang-v1_1/model.onnx',
-        'voices': 'assets/tts/kokoro-multi-lang-v1_1/voices.bin',
-        'tokens': 'assets/tts/kokoro-multi-lang-v1_1/tokens.txt',
-        'lexicon':
-            'assets/tts/kokoro-multi-lang-v1_1/lexicon-us-en.txt,assets/tts/kokoro-multi-lang-v1_1/lexicon-zh.txt',
-        'dataDir': 'assets/tts/kokoro-multi-lang-v1_1/espeak-ng-data',
-      };
+    test('an empty token reads back as no token', () async {
+      final settings = AppSettings();
+      await settings.setHfToken('');
+      expect(await settings.hfToken, isNull);
 
-      expect(modelConfig['model']!.contains('kokoro'), isTrue);
-      expect(modelConfig['voices']!.contains('voices.bin'), isTrue);
-      expect(modelConfig['tokens']!.contains('tokens.txt'), isTrue);
-      expect(modelConfig['lexicon']!.contains('lexicon'), isTrue);
-      expect(modelConfig['dataDir']!.contains('espeak-ng-data'), isTrue);
+      await settings.setHfToken('hf_example');
+      expect(await settings.hfToken, 'hf_example');
+
+      await settings.clearHfToken();
+      expect(await settings.hfToken, isNull);
+    });
+
+    test('deleting a model clears only that selection', () async {
+      final settings = AppSettings();
+      await settings.setSelectedLlmModel('llm.task');
+      await settings.setSelectedSttModel('stt.bin');
+
+      await settings.clearSelectionFor('llm.task');
+
+      expect(await settings.selectedLlmModel, isNull);
+      expect(await settings.selectedSttModel, 'stt.bin');
     });
   });
 
-  group('UI Component Tests', () {
-    testWidgets('Loading state displays circular progress indicator',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-
-      expect(find.byType(CircularProgressIndicator), findsOneWidget);
+  group('ModelStorage', () {
+    setUp(() {
+      FakePlatform.install();
+      ModelStorage().resetCacheForTest();
     });
 
-    testWidgets('Chat interface loads after initialization',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      expect(find.text('PrivAI'), findsOneWidget);
-      expect(find.byType(TextField), findsOneWidget);
+    test('resolves one directory for every caller', () async {
+      final storage = ModelStorage();
+      final a = await storage.pathFor('model.task');
+      final b = await ModelStorage().pathFor('model.task');
+      expect(a, b);
     });
 
-    testWidgets('Send button is present and tappable',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      final sendButton = find.byIcon(Icons.send);
-      expect(sendButton, findsOneWidget);
-
-      await tester.tap(sendButton);
-      await tester.pump();
-      // Button should still be there after tap
-      expect(sendButton, findsOneWidget);
+    test('keeps partial downloads under a separate name', () async {
+      final storage = ModelStorage();
+      expect(
+        await storage.partialPathFor('model.task'),
+        '${await storage.pathFor('model.task')}${ModelStorage.partialSuffix}',
+      );
     });
 
-    testWidgets('Mic button toggles between record and stop',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      // Initially shows mic icon
-      expect(find.byIcon(Icons.mic), findsOneWidget);
-      expect(find.byIcon(Icons.stop), findsNothing);
-
-      // Tap to start recording
-      await tester.tap(find.byIcon(Icons.mic));
-      await tester.pump();
-
-      // Should show stop icon
-      expect(find.byIcon(Icons.stop), findsOneWidget);
-      expect(find.byIcon(Icons.mic), findsNothing);
+    test('reports a missing model as not downloaded', () async {
+      expect(await ModelStorage().isDownloaded('absent.task'), isFalse);
+      expect(await ModelStorage().sizeOf('absent.task'), 0);
     });
 
-    testWidgets('Text field accepts and displays input',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
+    test('listing ignores partial downloads', () async {
+      final storage = ModelStorage();
+      final dir = await storage.directory();
+      await File('${dir.path}/done.task').writeAsString('x');
+      await File('${dir.path}/busy.task${ModelStorage.partialSuffix}')
+          .writeAsString('x');
 
-      const testMessage = 'Test chatbot message';
-      await tester.enterText(find.byType(TextField), testMessage);
+      expect(await storage.listDownloaded(), ['done.task']);
+    });
 
-      expect(find.text(testMessage), findsOneWidget);
+    test('delete removes both the model and its partial file', () async {
+      final storage = ModelStorage();
+      final dir = await storage.directory();
+      await File('${dir.path}/gone.task').writeAsString('x');
+      await File('${dir.path}/gone.task${ModelStorage.partialSuffix}')
+          .writeAsString('x');
+
+      await storage.delete('gone.task');
+
+      expect(await storage.listDownloaded(), isEmpty);
+      expect(await storage.partialSizeOf('gone.task'), 0);
     });
   });
 
-  group('Message Flow Tests', () {
-    testWidgets('Sending message adds it to conversation',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      const testMessage = 'Hello AI assistant';
-
-      // Enter and send message
-      await tester.enterText(find.byType(TextField), testMessage);
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
-
-      // Check that user message appears
-      expect(find.text('You'), findsOneWidget);
-      expect(find.text(testMessage), findsOneWidget);
-    });
-
-    testWidgets('Empty message is not sent', (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      // Try to send empty message
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
-
-      // No messages should be in the list
-      expect(find.text('You'), findsNothing);
-    });
-
-    testWidgets('Message list scrolls for long conversations',
-        (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
-
-      // Send multiple messages
-      for (int i = 1; i <= 10; i++) {
-        await tester.enterText(find.byType(TextField), 'Message $i');
-        await tester.tap(find.byIcon(Icons.send));
-        await tester.pump();
-      }
-
-      // Should find all messages
-      expect(find.text('Message 1'), findsOneWidget);
-      expect(find.text('Message 10'), findsOneWidget);
-    });
-  });
-
-  group('Multilingual Support Tests', () {
-    test('Language codes are valid ISO format', () {
-      final languageCodes = {
-        'English': 'en',
-        'Spanish': 'es',
-        'French': 'fr',
-        'German': 'de',
-        'Chinese': 'zh',
-        'Japanese': 'ja',
-        'Korean': 'ko',
-        'Arabic': 'ar',
-        'Hindi': 'hi',
-        'Portuguese': 'pt',
-        'Russian': 'ru',
-        'Italian': 'it'
-      };
-
-      languageCodes.forEach((language, code) {
-        expect(code.length, greaterThanOrEqualTo(2));
-        expect(code.length, lessThanOrEqualTo(3));
-        expect(code, matches(r'^[a-z]{2,3}$'));
+  group('Conversation parsing', () {
+    test('reads a well-formed record', () {
+      final conversation = Conversation.tryFromJson({
+        'id': '1',
+        'title': 'Hello',
+        'messages': [
+          {'role': 'user', 'text': 'hi'},
+        ],
+        'createdAt': '2026-01-01T10:00:00.000',
+        'updatedAt': '2026-01-02T10:00:00.000',
       });
+
+      expect(conversation, isNotNull);
+      expect(conversation!.title, 'Hello');
+      expect(conversation.messages.single['text'], 'hi');
+      expect(conversation.updatedAt.day, 2);
     });
 
-    test('Kokoro TTS speaker IDs are valid', () {
-      // Test speaker IDs for Kokoro model (0-102 = 103 speakers)
-      final speakerIds = [0, 1, 50, 100, 102];
-
-      for (final id in speakerIds) {
-        expect(id, isNonNegative);
-        expect(id, lessThan(103)); // Kokoro has 103 speakers (0-102)
-      }
+    test('drops a record with no id rather than inventing one', () {
+      // Regression: a parse failure used to produce a brand new empty
+      // conversation with a fresh id, which multiplied on every load.
+      expect(Conversation.tryFromJson({'title': 'orphan'}), isNull);
     });
-  });
 
-  group('Integration Tests', () {
-    testWidgets('Complete user interaction flow', (WidgetTester tester) async {
-      await tester.pumpWidget(const MyApp());
-      await tester.pumpAndSettle(const Duration(seconds: 5));
+    test('survives unparseable dates and message shapes', () {
+      final conversation = Conversation.tryFromJson({
+        'id': '2',
+        'createdAt': 'not a date',
+        'messages': ['bare string'],
+      });
 
-      // 1. Enter text
-      const message = 'How are you?';
-      await tester.enterText(find.byType(TextField), message);
-
-      // 2. Send message
-      await tester.tap(find.byIcon(Icons.send));
-      await tester.pump();
-
-      // 3. Verify message appears
-      expect(find.text('You'), findsOneWidget);
-      expect(find.text(message), findsOneWidget);
-
-      // 4. Test recording functionality
-      await tester.tap(find.byIcon(Icons.mic));
-      await tester.pump();
-      expect(find.byIcon(Icons.stop), findsOneWidget);
-
-      await tester.tap(find.byIcon(Icons.stop));
-      await tester.pump();
-      expect(find.byIcon(Icons.mic), findsOneWidget);
+      expect(conversation, isNotNull);
+      expect(conversation!.messages.single['role'], 'user');
+      expect(conversation.messages.single['text'], 'bare string');
     });
   });
-}
 
-// Helper functions for testing
-bool _isValidMessage(String? message) {
-  return message != null && message.trim().isNotEmpty;
+  group('ConversationService', () {
+    setUp(FakePlatform.install);
+
+    test('stores, retitles and deletes conversations', () async {
+      final service = ConversationService()..invalidateCache();
+
+      final conversation = await service.createNewConversation();
+      await service.updateConversationMessages(conversation.id, [
+        {'role': 'user', 'text': 'What is the capital of France?'},
+        {'role': 'ai', 'text': 'Paris.'},
+      ]);
+
+      service.invalidateCache();
+      final stored = await service.getConversations();
+      expect(stored, hasLength(1));
+      expect(stored.single.title, 'What is the capital of France?');
+      expect(stored.single.messages, hasLength(2));
+
+      await service.deleteConversation(conversation.id);
+      service.invalidateCache();
+      expect(await service.getConversations(), isEmpty);
+    });
+
+    test('titles a conversation from the first non-empty user message',
+        () async {
+      final service = ConversationService()..invalidateCache();
+      final conversation = await service.createNewConversation();
+
+      await service.updateConversationMessages(conversation.id, [
+        {'role': 'ai', 'text': 'How can I help?'},
+        {'role': 'user', 'text': '   '},
+        {'role': 'user', 'text': 'Explain gradients'},
+      ]);
+
+      service.invalidateCache();
+      expect((await service.getConversations()).single.title,
+          'Explain gradients');
+    });
+
+    test('migrates history written to secure storage by older versions',
+        () async {
+      final platform = FakePlatform.install();
+      platform.secureStorage['conversations'] =
+          '[{"id":"legacy","title":"Old chat","messages":[],'
+          '"createdAt":"2026-01-01T00:00:00.000",'
+          '"updatedAt":"2026-01-01T00:00:00.000"}]';
+
+      final service = ConversationService()..invalidateCache();
+      final conversations = await service.getConversations();
+
+      expect(conversations.single.id, 'legacy');
+      await service.flush();
+      // The key is cleared so the blob does not stay in encrypted preferences.
+      expect(platform.secureStorage.containsKey('conversations'), isFalse);
+    });
+  });
 }
