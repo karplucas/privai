@@ -1,3 +1,6 @@
+import 'dart:math';
+import 'dart:typed_data';
+
 import 'package:flutter_test/flutter_test.dart';
 import 'package:privai/models/model_spec.dart';
 import 'package:privai/services/chatterbox_gguf_tts_service.dart';
@@ -98,6 +101,83 @@ void main() {
         entry.files.map((f) => f.name),
         isNot(contains(ChatterboxGgufTtsService.codecFile)),
       );
+    });
+  });
+
+  group('vocoder tone removal', () {
+    /// codec.cpp's S3Gen adds a constant four-sample pattern to every render —
+    /// a fixed tone at a quarter of the sample rate, 6 kHz at 24 kHz, audible
+    /// as a whine. Measured from a real render's silent passages:
+    const offsets = [0.00842, 0.00299, -0.00204, 0.00043];
+
+    Float32List synth({required bool withSpeech}) {
+      const n = 24000;
+      final out = Float32List(n);
+      final rand = Random(7);
+      for (var i = 0; i < n; i++) {
+        // Loud for the first half, silent for the second, as an utterance is.
+        final speech = withSpeech && i < n ~/ 2
+            ? 0.3 * sin(2 * pi * 220 * i / 24000) + 0.02 * rand.nextDouble()
+            : 0.0;
+        out[i] = speech + offsets[i % 4];
+      }
+      return out;
+    }
+
+    /// Magnitude at [hz] over the signal's quiet tail.
+    double toneLevel(Float32List x, double hz) {
+      final tail = x.sublist(x.length ~/ 2);
+      var re = 0.0, im = 0.0;
+      for (var i = 0; i < tail.length; i++) {
+        final w = 2 * pi * hz * i / 24000;
+        re += tail[i] * cos(w);
+        im += tail[i] * sin(w);
+      }
+      return sqrt(re * re + im * im) / tail.length;
+    }
+
+    test('removes the constant per-phase offset', () {
+      final dirty = synth(withSpeech: true);
+      final clean = ChatterboxGgufTtsService.debugRemoveVocoderTone(dirty);
+
+      final before = toneLevel(dirty, 6000);
+      final after = toneLevel(clean, 6000);
+      expect(after, lessThan(before / 10),
+          reason: '6 kHz tone should drop by at least 10x '
+              '(before $before, after $after)');
+    });
+
+    test('leaves speech level alone', () {
+      final dirty = synth(withSpeech: true);
+      final clean = ChatterboxGgufTtsService.debugRemoveVocoderTone(dirty);
+
+      double rms(Float32List x) {
+        var s = 0.0;
+        for (final v in x) {
+          s += v * v;
+        }
+        return sqrt(s / x.length);
+      }
+
+      expect(rms(clean), closeTo(rms(dirty), rms(dirty) * 0.02));
+    });
+
+    test('is a no-op on audio that has no such offset', () {
+      const n = 24000;
+      final rand = Random(3);
+      final clean = Float32List(n);
+      for (var i = 0; i < n; i++) {
+        clean[i] = 0.2 * sin(2 * pi * 300 * i / 24000) + 0.01 * rand.nextDouble();
+      }
+      final out = ChatterboxGgufTtsService.debugRemoveVocoderTone(clean);
+      for (var i = 0; i < n; i++) {
+        expect(out[i], closeTo(clean[i], 0.02));
+      }
+    });
+
+    test('too-short buffers pass through untouched', () {
+      final tiny = Float32List.fromList([0.1, 0.2, 0.3, 0.4]);
+      expect(ChatterboxGgufTtsService.debugRemoveVocoderTone(tiny), same(tiny));
     });
   });
 }

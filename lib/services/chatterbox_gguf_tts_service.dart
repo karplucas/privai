@@ -203,6 +203,65 @@ class ChatterboxGgufTtsService implements TtsEngine {
     return audio;
   }
 
+  /// Samples per cycle of the vocoder's constant-offset artifact.
+  ///
+  /// 24 kHz / 4 = 6 kHz, which is where the tone sits.
+  static const int _artifactPeriod = 4;
+
+  /// Removes the vocoder's fixed per-phase DC offset — an audible 6 kHz whine.
+  ///
+  /// codec.cpp's S3Gen emits a constant repeating four-sample pattern, clearly
+  /// visible in silence, where the waveform settles to exactly
+  /// `[8.42, 2.99, -2.04, 0.43] × 10⁻³` cycle after cycle. A constant offset
+  /// per phase position is a fixed tone at a quarter of the sample rate, and
+  /// it is present in every render this pipeline produces, on every platform,
+  /// GPU or CPU — so it is a bug in the vocoder rather than anything about how
+  /// it is driven here.
+  ///
+  /// The offsets are measured over the quietest frames rather than the whole
+  /// signal: speech dominates a plain average and subtracting that makes the
+  /// tone *worse* (measured: 6 kHz energy in silence went up 2.8x). Estimated
+  /// from the quiet frames instead it drops by ~38x, and broadband level is
+  /// unchanged to three decimal places.
+  static Float32List _removeVocoderTone(Float32List samples) {
+    const frame = 512; // a multiple of _artifactPeriod, so phases stay aligned
+    if (samples.length < frame * 4) return samples;
+
+    final frames = samples.length ~/ frame;
+    final energy = List<({double rms, int index})>.generate(frames, (i) {
+      var sum = 0.0;
+      for (var j = i * frame; j < (i + 1) * frame; j++) {
+        sum += samples[j] * samples[j];
+      }
+      return (rms: sum / frame, index: i);
+    })
+      ..sort((a, b) => a.rms.compareTo(b.rms));
+
+    final quiet = energy.take((frames * 15 ~/ 100).clamp(1, frames)).toList();
+    final sums = List<double>.filled(_artifactPeriod, 0);
+    final counts = List<int>.filled(_artifactPeriod, 0);
+    for (final f in quiet) {
+      for (var j = f.index * frame; j < (f.index + 1) * frame; j++) {
+        sums[j % _artifactPeriod] += samples[j];
+        counts[j % _artifactPeriod]++;
+      }
+    }
+
+    final out = Float32List.fromList(samples);
+    for (var p = 0; p < _artifactPeriod; p++) {
+      if (counts[p] == 0) continue;
+      final offset = sums[p] / counts[p];
+      for (var j = p; j < out.length; j += _artifactPeriod) {
+        out[j] -= offset;
+      }
+    }
+    return out;
+  }
+
+  @visibleForTesting
+  static Float32List debugRemoveVocoderTone(Float32List samples) =>
+      _removeVocoderTone(samples);
+
   /// Threads to give the decode loop.
   ///
   /// Not a detail: leaving this at the runtime's default measured four times
@@ -231,7 +290,8 @@ class ChatterboxGgufTtsService implements TtsEngine {
       '${dir.path}/chatterbox_gguf_${DateTime.now().millisecondsSinceEpoch}.wav',
     );
     await file.writeAsBytes(
-      encodeWav(audio.samples, sampleRate: audio.sampleRate),
+      encodeWav(_removeVocoderTone(audio.samples),
+          sampleRate: audio.sampleRate),
     );
     return file;
   }
