@@ -7,6 +7,7 @@ import '../services/model_catalog.dart';
 import '../services/model_storage.dart';
 import '../services/tts_engine.dart';
 import '../services/tts_router.dart';
+import 'theme.dart';
 import 'widgets/hf_sign_in_sheet.dart';
 import 'widgets/model_tile.dart';
 
@@ -532,12 +533,14 @@ class _ModelsPageState extends State<ModelsPage> {
       },
       child: Scaffold(
         appBar: AppBar(
-          title: const Text('Settings & Models'),
-          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-          elevation: 0,
-          leading: BackButton(
-            onPressed: () => Navigator.pop(context, _needsReload),
+          leadingWidth: 60,
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 12),
+            child: _CircleBackButton(
+              onPressed: () => Navigator.pop(context, _needsReload),
+            ),
           ),
+          title: const Text('Settings & Models'),
         ),
         body: _buildBody(),
       ),
@@ -559,56 +562,99 @@ class _ModelsPageState extends State<ModelsPage> {
 
     final catalog = _catalog!;
     return ListView(
-      padding: const EdgeInsets.only(bottom: 32),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
       children: [
         _huggingFaceSection(),
-        const Divider(height: 32),
-        for (final kind in ModelKind.values) ...[
-          _modelSection(kind, catalog.byKind(kind)),
-          const Divider(height: 32),
-        ],
+        for (final kind in ModelKind.values) _modelSection(kind, catalog.byKind(kind)),
         _llmSection(),
-        const Divider(height: 32),
         _voiceTogglesSection(),
-        const Divider(height: 32),
         _ttsSection(catalog),
-        const Divider(height: 32),
         _sttSection(catalog),
       ],
     );
   }
 
-  Widget _sectionHeader(String title, {String? subtitle}) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(title, style: Theme.of(context).textTheme.titleMedium),
-            if (subtitle != null) ...[
-              const SizedBox(height: 4),
-              Text(subtitle, style: Theme.of(context).textTheme.bodySmall),
-            ],
-          ],
-        ),
-      );
+  /// One settings group: a heading on the canvas with its controls in a card
+  /// beneath it, which reads more clearly on a near-black background than the
+  /// hairline dividers this replaced.
+  Widget _section(
+    String title, {
+    String? subtitle,
+    required List<Widget> children,
+    EdgeInsets padding = const EdgeInsets.all(4),
+  }) {
+    final theme = Theme.of(context);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 24),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(6, 8, 6, 10),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(title, style: theme.textTheme.titleMedium),
+                if (subtitle != null) ...[
+                  const SizedBox(height: 4),
+                  Text(subtitle, style: theme.textTheme.bodySmall),
+                ],
+              ],
+            ),
+          ),
+          Container(
+            width: double.infinity,
+            padding: padding,
+            decoration: BoxDecoration(
+              color: AppGradients.of(context).bubbleColor,
+              borderRadius: BorderRadius.circular(AppTheme.radius),
+              border: Border.all(color: AppGradients.of(context).hairline),
+            ),
+            // The card's fill is painted by this Container, so list tiles
+            // inside it need a Material of their own to ink onto — otherwise
+            // their splashes and selected-tile colour land on the page's
+            // Material, underneath the fill, and Flutter asserts.
+            child: Material(
+              type: MaterialType.transparency,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: children,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 
   Widget _huggingFaceSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    final theme = Theme.of(context);
+
+    return _section(
+      'Hugging Face account',
+      subtitle: 'Required to download models from gated repositories, such '
+          'as the Gemma models published by Google.',
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
       children: [
-        _sectionHeader(
-          'Hugging Face account',
-          subtitle: 'Required to download models from gated repositories, such '
-              'as the Gemma models published by Google.',
-        ),
         ListTile(
-          leading: Icon(_signedIn ? Icons.verified_user : Icons.person_outline),
-          title: Text(_signedIn
-              ? 'Signed in${_hfAccount == null ? '' : ' as $_hfAccount'}'
-              : 'Not signed in'),
-          subtitle: Text(_signedIn
-              ? 'Gated models you have accepted the terms for are downloadable.'
-              : 'Sign in to download gated models.'),
+          leading: Icon(
+            _signedIn ? Icons.verified_user : Icons.person_outline,
+            color: _signedIn ? theme.colorScheme.primary : null,
+          ),
+          title: Text(
+            _signedIn
+                ? 'Signed in${_hfAccount == null ? '' : ' as $_hfAccount'}'
+                : 'Not signed in',
+            style: theme.textTheme.titleSmall,
+          ),
+          subtitle: Text(
+            _signedIn
+                ? 'Gated models you have accepted the terms for are downloadable.'
+                : 'Sign in to download gated models.',
+            style: theme.textTheme.bodySmall,
+          ),
+          isThreeLine: true,
           trailing: _signedIn
               ? TextButton(onPressed: _signOut, child: const Text('Sign out'))
               : FilledButton(onPressed: _signIn, child: const Text('Sign in')),
@@ -620,10 +666,10 @@ class _ModelsPageState extends State<ModelsPage> {
   Widget _modelSection(ModelKind kind, List<ModelSpec> models) {
     if (models.isEmpty) return const SizedBox.shrink();
 
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return _section(
+      kind.label,
+      padding: const EdgeInsets.all(8),
       children: [
-        _sectionHeader(kind.label),
         for (final model in models)
           ModelTile(
             model: model,
@@ -645,72 +691,64 @@ class _ModelsPageState extends State<ModelsPage> {
   }
 
   Widget _llmSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return _section(
+      'Language model parameters',
+      subtitle: 'Changes take effect the next time the model loads.',
+      padding: const EdgeInsets.all(16),
       children: [
-        _sectionHeader('Language model parameters',
-            subtitle: 'Changes take effect the next time the model loads.'),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Column(
-            children: [
-              TextField(
-                controller: _promptController,
-                decoration: const InputDecoration(
-                  labelText: 'System prompt',
-                  border: OutlineInputBorder(),
-                ),
-                maxLines: 3,
-                onChanged: (value) {
-                  _settings.setSystemPrompt(value);
-                  _needsReload = true;
-                },
+        Column(
+          children: [
+            TextField(
+              controller: _promptController,
+              decoration: const InputDecoration(labelText: 'System prompt'),
+              maxLines: 3,
+              onChanged: (value) {
+                _settings.setSystemPrompt(value);
+                _needsReload = true;
+              },
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              controller: _temperatureController,
+              decoration: const InputDecoration(
+                labelText: 'Temperature',
+                helperText: '0.0 (focused) to 2.0 (creative)',
               ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _temperatureController,
-                decoration: const InputDecoration(
-                  labelText: 'Temperature',
-                  helperText: '0.0 (focused) to 2.0 (creative)',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType:
-                    const TextInputType.numberWithOptions(decimal: true),
-                onChanged: (value) {
-                  final parsed = double.tryParse(value);
-                  if (parsed == null) return;
-                  _settings.setTemperature(parsed.clamp(0.0, 2.0).toDouble());
-                  _needsReload = true;
-                },
+              keyboardType:
+                  const TextInputType.numberWithOptions(decimal: true),
+              onChanged: (value) {
+                final parsed = double.tryParse(value);
+                if (parsed == null) return;
+                _settings.setTemperature(parsed.clamp(0.0, 2.0).toDouble());
+                _needsReload = true;
+              },
+            ),
+            const SizedBox(height: 20),
+            TextField(
+              controller: _maxTokensController,
+              decoration: const InputDecoration(
+                labelText: 'Max context tokens',
+                helperText: '256 to 32768',
               ),
-              const SizedBox(height: 16),
-              TextField(
-                controller: _maxTokensController,
-                decoration: const InputDecoration(
-                  labelText: 'Max context tokens',
-                  helperText: '256 to 32768',
-                  border: OutlineInputBorder(),
-                ),
-                keyboardType: TextInputType.number,
-                onChanged: (value) {
-                  final parsed = int.tryParse(value);
-                  if (parsed == null) return;
-                  _settings.setMaxTokens(parsed.clamp(256, 32768));
-                  _needsReload = true;
-                },
-              ),
-            ],
-          ),
+              keyboardType: TextInputType.number,
+              onChanged: (value) {
+                final parsed = int.tryParse(value);
+                if (parsed == null) return;
+                _settings.setMaxTokens(parsed.clamp(256, 32768));
+                _needsReload = true;
+              },
+            ),
+          ],
         ),
       ],
     );
   }
 
   Widget _voiceTogglesSection() {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return _section(
+      'Chat behaviour',
+      padding: const EdgeInsets.symmetric(vertical: 4),
       children: [
-        _sectionHeader('Chat behaviour'),
         SwitchListTile(
           title: const Text('Text-to-speech'),
           subtitle: const Text('Speak the assistant\'s replies aloud'),
@@ -755,10 +793,10 @@ class _ModelsPageState extends State<ModelsPage> {
   }
 
   Widget _ttsSection(ModelCatalogData catalog) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return _section(
+      'Text-to-speech options',
+      padding: const EdgeInsets.symmetric(vertical: 4),
       children: [
-        _sectionHeader('Text-to-speech options'),
         RadioGroup<TtsEngineKind>(
           groupValue: _ttsEngineKind,
           onChanged: (value) async {
@@ -776,12 +814,16 @@ class _ModelsPageState extends State<ModelsPage> {
               for (final engine in TtsEngineKind.values)
                 RadioListTile<TtsEngineKind>(
                   value: engine,
-                  title: Text(engine.label),
+                  title: Text(
+                    engine.label,
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                   subtitle: Text(
                     engine.requiresExclusiveMemory
                         ? '${engine.description}\nFrees the language model '
                             'while speaking, then reloads it.'
                         : engine.description,
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
             ],
@@ -806,17 +848,14 @@ class _ModelsPageState extends State<ModelsPage> {
             },
           ),
         Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+          padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: Column(
             children: [
               DropdownButtonFormField<String>(
                 initialValue: catalog.ttsLanguages.any((l) => l.code == _ttsLanguage)
                     ? _ttsLanguage
                     : null,
-                decoration: const InputDecoration(
-                  labelText: 'Language',
-                  border: OutlineInputBorder(),
-                ),
+                decoration: const InputDecoration(labelText: 'Language'),
                 items: [
                   for (final language in catalog.ttsLanguages)
                     DropdownMenuItem(
@@ -833,23 +872,24 @@ class _ModelsPageState extends State<ModelsPage> {
               ),
               const SizedBox(height: 16),
               if (_availableVoices.isEmpty)
-                const ListTile(
+                ListTile(
                   contentPadding: EdgeInsets.zero,
-                  leading: Icon(Icons.info_outline),
-                  title: Text('Voice list unavailable'),
+                  leading: const Icon(Icons.info_outline),
+                  title: Text(
+                    'Voice list unavailable',
+                    style: Theme.of(context).textTheme.titleSmall,
+                  ),
                   subtitle: Text(
                     'Download and select a text-to-speech model to choose a '
                     'voice.',
+                    style: Theme.of(context).textTheme.bodySmall,
                   ),
                 )
               else
                 DropdownButtonFormField<String>(
                   initialValue:
                       _availableVoices.contains(_ttsVoice) ? _ttsVoice : null,
-                  decoration: const InputDecoration(
-                    labelText: 'Voice',
-                    border: OutlineInputBorder(),
-                  ),
+                  decoration: const InputDecoration(labelText: 'Voice'),
                   items: [
                     for (final voice in _availableVoices)
                       DropdownMenuItem(value: voice, child: Text(voice)),
@@ -867,7 +907,6 @@ class _ModelsPageState extends State<ModelsPage> {
                 decoration: const InputDecoration(
                   labelText: 'Speaking speed',
                   helperText: '0.5 to 2.0',
-                  border: OutlineInputBorder(),
                 ),
                 keyboardType:
                     const TextInputType.numberWithOptions(decimal: true),
@@ -885,20 +924,17 @@ class _ModelsPageState extends State<ModelsPage> {
   }
 
   Widget _sttSection(ModelCatalogData catalog) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
+    return _section(
+      'Speech-to-text options',
+      padding: const EdgeInsets.all(16),
       children: [
-        _sectionHeader('Speech-to-text options'),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
+        SizedBox(
+          width: double.infinity,
           child: DropdownButtonFormField<String>(
             initialValue: catalog.sttLanguages.any((l) => l.code == _sttLanguage)
                 ? _sttLanguage
                 : null,
-            decoration: const InputDecoration(
-              labelText: 'Language',
-              border: OutlineInputBorder(),
-            ),
+            decoration: const InputDecoration(labelText: 'Language'),
             items: [
               for (final language in catalog.sttLanguages)
                 DropdownMenuItem(
@@ -915,6 +951,41 @@ class _ModelsPageState extends State<ModelsPage> {
           ),
         ),
       ],
+    );
+  }
+}
+
+/// Matches the circular controls on the chat screen's app bar.
+class _CircleBackButton extends StatelessWidget {
+  const _CircleBackButton({required this.onPressed});
+
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Tooltip(
+      message: MaterialLocalizations.of(context).backButtonTooltip,
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHighest,
+        shape: CircleBorder(
+          side: BorderSide(color: AppGradients.of(context).hairline),
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPressed,
+          child: SizedBox(
+            width: 38,
+            height: 38,
+            child: Icon(
+              Icons.arrow_back,
+              size: 19,
+              color: theme.colorScheme.onSurface,
+            ),
+          ),
+        ),
+      ),
     );
   }
 }

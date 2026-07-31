@@ -1,6 +1,26 @@
 {
   "llm": [
     {
+      "name": "Gemma 4 E2B Instruct",
+      "repo": "litert-community/gemma-4-E2B-it-litert-lm",
+      "file": "gemma-4-E2B-it.litertlm",
+      "filename": "gemma-4-E2B-it.litertlm",
+      "size": "2.6GB",
+      "description": "Newest generation: 256K context, 140+ languages, no license to accept",
+      "gated": false,
+      "license": "Apache-2.0"
+    },
+    {
+      "name": "Gemma 4 E4B Instruct",
+      "repo": "litert-community/gemma-4-E4B-it-litert-lm",
+      "file": "gemma-4-E4B-it.litertlm",
+      "filename": "gemma-4-E4B-it.litertlm",
+      "size": "3.7GB",
+      "description": "Same generation, more capable; wants a high-end device",
+      "gated": false,
+      "license": "Apache-2.0"
+    },
+    {
       "name": "Gemma 3 1B Instruct",
       "repo": "litert-community/Gemma3-1B-IT",
       "file": "Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm",

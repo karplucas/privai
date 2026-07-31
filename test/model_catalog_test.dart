@@ -119,7 +119,15 @@ void main() {
       expect(catalog.byKind(ModelKind.llm), isNotEmpty);
     });
 
-    test('marks every Gemma model as gated and names the license', () {
+    // Gemma 3 and 3n ship under the Gemma Terms of Use, which Hugging Face
+    // enforces per account, so those entries have to carry the gate. Gemma 4 is
+    // Apache-2.0 and its litert-community repositories are not gated, so
+    // requiring the gate of every Gemma would force users through a licence
+    // acceptance that does not exist. What every entry does owe the user is a
+    // named licence, and every gated one an explanation of what it is agreeing
+    // to.
+    test('names a license for every Gemma model, and explains the gated ones',
+        () {
       final gemmas = catalog.models.where(
         (m) => m.repo.toLowerCase().contains('gemma'),
       );
@@ -127,12 +135,34 @@ void main() {
       expect(gemmas, isNotEmpty, reason: 'the catalog should offer Gemma');
       for (final model in gemmas) {
         expect(
+          model.license,
+          isNotNull,
+          reason: '${model.repo} must name its license',
+        );
+        if (model.gated) {
+          expect(
+            model.licenseNote,
+            isNotNull,
+            reason: '${model.repo} gates downloads without saying why',
+          );
+        }
+      }
+    });
+
+    test('the Gemma models still under the Terms of Use keep their gate', () {
+      // Losing the gate on these would mean downloads that fail with a bare 403
+      // instead of walking the user through accepting Google's terms.
+      final gated = catalog.models.where(
+        (m) => m.license == 'Gemma Terms of Use',
+      );
+
+      expect(gated, isNotEmpty);
+      for (final model in gated) {
+        expect(
           model.gated,
           isTrue,
           reason: '${model.repo} must go through the license gate',
         );
-        expect(model.license, isNotNull);
-        expect(model.licenseNote, isNotNull);
       }
     });
 

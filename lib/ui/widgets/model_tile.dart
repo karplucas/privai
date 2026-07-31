@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../models/model_spec.dart';
 import '../../services/huggingface_service.dart';
+import '../theme.dart';
 
 /// Per-model UI state tracked by the models page.
 @immutable
@@ -89,52 +90,75 @@ class ModelTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
 
+    // Sits inside the settings page's section card, so this is a nested panel
+    // rather than a card of its own: a slightly raised fill, and the accent
+    // border reserved for whichever model is actually in use.
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 6),
-      child: Card(
-        margin: EdgeInsets.zero,
-        child: Padding(
-          padding: const EdgeInsets.all(12),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Icon(
-                    _icon,
-                    color: isSelected ? theme.colorScheme.primary : null,
-                  ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(model.name, style: theme.textTheme.titleSmall),
-                        const SizedBox(height: 2),
-                        Text(
-                          '${model.size} • ${model.description}',
-                          style: theme.textTheme.bodySmall,
-                        ),
-                      ],
-                    ),
-                  ),
-                  if (isSelected)
-                    Padding(
-                      padding: const EdgeInsets.only(left: 8),
-                      child: Icon(
-                        Icons.check_circle,
-                        color: theme.colorScheme.primary,
-                      ),
-                    ),
-                ],
-              ),
-              const SizedBox(height: 8),
-              _statusLine(context),
-              const SizedBox(height: 8),
-              _actions(context),
-            ],
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      child: Container(
+        padding: const EdgeInsets.all(14),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(
+            color: isSelected
+                ? theme.colorScheme.primary.withValues(alpha: 0.55)
+                : AppGradients.of(context).hairline,
           ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                if (isSelected)
+                  SparkAvatar(size: 30, icon: _icon)
+                else
+                  Container(
+                    width: 30,
+                    height: 30,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: theme.colorScheme.surface,
+                      border: Border.all(color: AppGradients.of(context).hairline),
+                    ),
+                    child: Icon(
+                      _icon,
+                      size: 16,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(model.name, style: theme.textTheme.titleSmall),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${model.size} • ${model.description}',
+                        style: theme.textTheme.bodySmall,
+                      ),
+                    ],
+                  ),
+                ),
+                if (isSelected)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 8),
+                    child: Icon(
+                      Icons.check_circle,
+                      size: 20,
+                      color: theme.colorScheme.primary,
+                    ),
+                  ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            _statusLine(context),
+            const SizedBox(height: 6),
+            _actions(context),
+          ],
         ),
       ),
     );
@@ -155,7 +179,10 @@ class ModelTile extends StatelessWidget {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          LinearProgressIndicator(value: fraction),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: LinearProgressIndicator(value: fraction, minHeight: 5),
+          ),
           const SizedBox(height: 4),
           Text(
             fraction == null
@@ -208,7 +235,7 @@ class ModelTile extends StatelessWidget {
         model.license == null
             ? 'Open download'
             : 'Open download • ${model.license}',
-        theme.colorScheme.outline,
+        theme.colorScheme.onSurfaceVariant,
       );
     }
 
@@ -242,13 +269,13 @@ class ModelTile extends StatelessWidget {
           context,
           Icons.wifi_off,
           'Could not reach Hugging Face',
-          theme.colorScheme.outline,
+          theme.colorScheme.onSurfaceVariant,
         ),
       null => _badge(
           context,
           Icons.gavel,
           'Gated — requires accepting the ${model.license ?? 'license'}',
-          theme.colorScheme.outline,
+          theme.colorScheme.onSurfaceVariant,
         ),
     };
   }

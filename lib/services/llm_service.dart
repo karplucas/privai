@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter_gemma/flutter_gemma.dart';
+import 'package:flutter_gemma_litertlm/flutter_gemma_litertlm.dart';
+import 'package:flutter_gemma_mediapipe/flutter_gemma_mediapipe.dart';
 
 import 'app_settings.dart';
 import 'model_storage.dart';
@@ -65,8 +67,27 @@ class LlmService {
   /// This used to be kicked off from the constructor without being awaited, so
   /// the first [initializeChat] could race the plugin's own setup. Callers now
   /// await it through [initializeChat].
-  Future<void> _ensurePluginInitialized() =>
-      _pluginInit ??= FlutterGemma.initialize();
+  ///
+  /// Both engines have to be named here: since flutter_gemma 1.0 the core
+  /// package registers none of them, and an unregistered format fails at
+  /// [FlutterGemma.getActiveModel] rather than at install. The registry routes
+  /// each model by file type — .litertlm to LiteRT-LM, .task/.bin to MediaPipe.
+  Future<void> _ensurePluginInitialized() => _pluginInit ??= FlutterGemma.initialize(
+        inferenceEngines: const [LiteRtLmEngine(), MediaPipeEngine()],
+      );
+
+  /// The engine registry routes on the [ModelFileType] declared at install
+  /// time, not on the path it is handed, and `installModel` defaults every
+  /// model to [ModelFileType.task]. Left at that default a .litertlm model is
+  /// sent to MediaPipe, whose native EngineFactory rejects it: "should be
+  /// handled by Dart FFI (LiteRtLmFfiClient), not by EngineFactory."
+  @visibleForTesting
+  static ModelFileType fileTypeFor(String filename) =>
+      switch (filename.toLowerCase().split('.').last) {
+        'litertlm' => ModelFileType.litertlm,
+        'bin' || 'tflite' => ModelFileType.binary,
+        _ => ModelFileType.task,
+      };
 
   /// Loads the selected model and opens a chat session.
   ///
@@ -98,11 +119,13 @@ class LlmService {
         throw ModelNotDownloadedException(filename);
       }
 
-      debugPrint('LlmService: loading $modelPath');
+      final fileType = fileTypeFor(filename);
+      debugPrint('LlmService: loading $modelPath as ${fileType.name}');
 
-      await FlutterGemma.installModel(modelType: ModelType.gemmaIt)
-          .fromFile(modelPath)
-          .install();
+      await FlutterGemma.installModel(
+        modelType: ModelType.gemmaIt,
+        fileType: fileType,
+      ).fromFile(modelPath).install();
 
       final maxTokens = await _settings.maxTokens;
       final model = await FlutterGemma.getActiveModel(maxTokens: maxTokens);

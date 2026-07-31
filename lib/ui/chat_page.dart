@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../services/app_settings.dart';
@@ -9,6 +10,7 @@ import '../services/llm_service.dart';
 import '../services/tts_router.dart';
 import '../services/whisper_service.dart';
 import 'models_page.dart';
+import 'theme.dart';
 
 /// The main chat screen.
 class ChatScreen extends StatefulWidget {
@@ -437,44 +439,99 @@ class ChatScreenState extends State<ChatScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('PrivAI'),
-        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
-        elevation: 0,
-        actions: [
-          IconButton(
-            tooltip: 'Toggle theme',
-            icon: Icon(Theme.of(context).brightness == Brightness.dark
-                ? Icons.light_mode
-                : Icons.dark_mode),
-            onPressed: widget.themeToggleCallback,
+      appBar: _buildAppBar(),
+      drawer: _buildDrawer(),
+      body: SafeArea(
+        top: false,
+        child: Column(
+          children: [
+            if (_isModelLoading) const LinearProgressIndicator(minHeight: 2),
+            if (_modelError != null) _buildModelErrorBanner(),
+            Expanded(child: _buildMessageList()),
+            if (_isTranscribing) _buildStatusLine('Transcribing…'),
+            if (_isStreaming) _buildStopButton(),
+            _buildComposer(),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// A conversation header rather than a plain title bar: the assistant's
+  /// gradient badge, the app name, and whichever conversation is open beneath
+  /// it.
+  PreferredSizeWidget _buildAppBar() {
+    final theme = Theme.of(context);
+    final subtitle = _currentConversation?.title;
+
+    return AppBar(
+      leadingWidth: 60,
+      leading: Builder(
+        builder: (context) => Padding(
+          padding: const EdgeInsets.only(left: 12),
+          child: _CircleIconButton(
+            icon: Icons.menu,
+            tooltip: 'Menu',
+            onPressed: () => Scaffold.of(context).openDrawer(),
+          ),
+        ),
+      ),
+      title: Row(
+        children: [
+          const SparkAvatar(size: 32),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                const Text('PrivAI'),
+                if (subtitle != null && subtitle.isNotEmpty)
+                  Text(
+                    subtitle,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall,
+                  ),
+              ],
+            ),
           ),
         ],
       ),
-      drawer: _buildDrawer(),
-      body: Column(
-        children: [
-          if (_isModelLoading) const LinearProgressIndicator(),
-          if (_modelError != null) _buildModelErrorBanner(),
-          Expanded(child: _buildMessageList()),
-          if (_isTranscribing) _buildStatusLine('Transcribing…'),
-          if (_isStreaming) _buildStopButton(),
-          _buildComposer(),
-        ],
-      ),
+      actions: [
+        _CircleIconButton(
+          icon: theme.brightness == Brightness.dark
+              ? Icons.light_mode
+              : Icons.dark_mode,
+          tooltip: 'Toggle theme',
+          onPressed: widget.themeToggleCallback,
+        ),
+        const SizedBox(width: 8),
+        _CircleIconButton(
+          icon: Icons.tune,
+          tooltip: 'Settings & models',
+          onPressed: _openSettings,
+        ),
+        const SizedBox(width: 12),
+      ],
     );
   }
 
   Widget _buildModelErrorBanner() {
     final theme = Theme.of(context);
-    return Material(
-      color: theme.colorScheme.errorContainer,
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 8, 12),
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.errorContainer,
+          borderRadius: BorderRadius.circular(18),
+          border: Border.all(color: theme.colorScheme.error.withValues(alpha: 0.35)),
+        ),
         child: Row(
           children: [
             Icon(Icons.warning_amber,
-                color: theme.colorScheme.onErrorContainer),
+                size: 20, color: theme.colorScheme.onErrorContainer),
             const SizedBox(width: 12),
             Expanded(
               child: Text(
@@ -495,13 +552,22 @@ class ChatScreenState extends State<ChatScreen> {
 
   Widget _buildMessageList() {
     if (_messages.isEmpty) {
+      final theme = Theme.of(context);
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(32),
-          child: Text(
-            'Everything here runs on this device.\nSay something to begin.',
-            textAlign: TextAlign.center,
-            style: Theme.of(context).textTheme.bodyMedium,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const SparkAvatar(size: 64),
+              const SizedBox(height: 20),
+              Text(
+                'Everything here runs on this device.\nSay something to begin.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodyMedium
+                    ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+              ),
+            ],
           ),
         ),
       );
@@ -509,196 +575,354 @@ class ChatScreenState extends State<ChatScreen> {
 
     return ListView.builder(
       controller: _scrollController,
-      padding: const EdgeInsets.all(10),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
       itemCount: _messages.length,
-      itemBuilder: (context, index) => _buildMessage(_messages[index]),
+      itemBuilder: (context, index) => _buildMessage(
+        _messages[index],
+        isLast: index == _messages.length - 1,
+      ),
     );
   }
 
   /// Renders one message.
   ///
-  /// Only the user's own messages get a bubble. Assistant replies are plain
-  /// text across the full width: they run to a paragraph or more, and wrapping
-  /// that in a filled, padded, rounded box turns every answer into a heavy
-  /// block that crowds the screen.
-  Widget _buildMessage(Map<String, String> message) {
+  /// The user's own words sit in a gradient bubble on the right; the
+  /// assistant's reply gets a flat card on the left, tagged with its badge and
+  /// followed by the actions that apply to a finished answer.
+  Widget _buildMessage(Map<String, String> message, {required bool isLast}) {
     final theme = Theme.of(context);
+    final gradients = AppGradients.of(context);
     final role = message['role'];
     final text = message['text'] ?? '';
+    final maxBubbleWidth = MediaQuery.of(context).size.width * 0.78;
 
     if (role == 'system') {
       return Padding(
-        padding: const EdgeInsets.symmetric(vertical: 8),
+        padding: const EdgeInsets.symmetric(vertical: 10),
         child: Center(
           child: Text(
             text,
             textAlign: TextAlign.center,
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.outline),
+            style: theme.textTheme.bodySmall,
           ),
         ),
       );
     }
 
     if (role == 'user') {
-      return Align(
-        alignment: Alignment.centerRight,
-        child: Container(
-          constraints: BoxConstraints(
-            maxWidth: MediaQuery.of(context).size.width * 0.78,
-          ),
-          margin: const EdgeInsets.only(top: 10, bottom: 2, left: 32),
-          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.primaryContainer,
-            borderRadius: BorderRadius.circular(18),
-          ),
-          child: SelectableText(
-            text,
-            style: TextStyle(color: theme.colorScheme.onPrimaryContainer),
+      return Padding(
+        padding: const EdgeInsets.only(top: 10, bottom: 2, left: 40),
+        child: Align(
+          alignment: Alignment.centerRight,
+          child: Container(
+            constraints: BoxConstraints(maxWidth: maxBubbleWidth),
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 11),
+            decoration: BoxDecoration(
+              gradient: gradients.bubble,
+              borderRadius: const BorderRadius.only(
+                topLeft: Radius.circular(AppTheme.radius),
+                topRight: Radius.circular(AppTheme.radius),
+                bottomLeft: Radius.circular(AppTheme.radius),
+                bottomRight: Radius.circular(6),
+              ),
+            ),
+            child: SelectableText(
+              text,
+              style: const TextStyle(color: Colors.white, height: 1.4),
+            ),
           ),
         ),
       );
     }
 
-    // Assistant reply.
-    if (text.isEmpty && _isStreaming) {
-      // First token has not arrived yet; show that something is happening.
-      return const Padding(
-        padding: EdgeInsets.symmetric(vertical: 12),
-        child: SizedBox(
-          width: 18,
-          height: 18,
-          child: CircularProgressIndicator(strokeWidth: 2),
-        ),
-      );
-    }
+    // Assistant reply. The first token has not always arrived by the time the
+    // bubble appears, so an empty one shows that something is happening rather
+    // than looking stalled.
+    final streamingThis = isLast && _isStreaming;
 
     return Padding(
-      padding: const EdgeInsets.only(top: 6, bottom: 14, right: 8),
-      child: SelectableText(
-        text,
-        style: theme.textTheme.bodyMedium?.copyWith(
-          color: theme.colorScheme.onSurface,
-          height: 1.4,
-        ),
+      padding: const EdgeInsets.only(top: 12, bottom: 4, right: 24),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.only(top: 4),
+            child: SparkAvatar(size: 26),
+          ),
+          const SizedBox(width: 10),
+          Flexible(
+            child: Container(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              decoration: BoxDecoration(
+                color: gradients.bubbleColor,
+                border: Border.all(color: gradients.hairline),
+                borderRadius: const BorderRadius.only(
+                  topLeft: Radius.circular(6),
+                  topRight: Radius.circular(AppTheme.radius),
+                  bottomLeft: Radius.circular(AppTheme.radius),
+                  bottomRight: Radius.circular(AppTheme.radius),
+                ),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (text.isEmpty && streamingThis)
+                    const Padding(
+                      padding: EdgeInsets.only(bottom: 4),
+                      child: SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                    )
+                  else
+                    SelectableText(
+                      text,
+                      style: theme.textTheme.bodyMedium
+                          ?.copyWith(color: theme.colorScheme.onSurface),
+                    ),
+                  if (text.isNotEmpty && !streamingThis) ...[
+                    Divider(height: 20, color: gradients.hairline),
+                    _buildReplyActions(text),
+                  ] else
+                    const SizedBox(height: 4),
+                ],
+              ),
+            ),
+          ),
+        ],
       ),
+    );
+  }
+
+  /// What you can do with a finished answer. Deliberately limited to the two
+  /// actions the app can actually back: put it on the clipboard, and read it
+  /// aloud with the configured voice.
+  Widget _buildReplyActions(String text) {
+    Widget action(IconData icon, String tooltip, VoidCallback onPressed) =>
+        IconButton(
+          tooltip: tooltip,
+          icon: Icon(icon, size: 18),
+          onPressed: onPressed,
+          visualDensity: VisualDensity.compact,
+          padding: EdgeInsets.zero,
+          constraints: const BoxConstraints.tightFor(width: 32, height: 28),
+          color: Theme.of(context).colorScheme.onSurfaceVariant,
+        );
+
+    return Row(
+      children: [
+        action(Icons.content_copy_outlined, 'Copy', () async {
+          await Clipboard.setData(ClipboardData(text: text));
+          _showMessage('Copied to clipboard.');
+        }),
+        const SizedBox(width: 4),
+        if (_ttsEnabled)
+          action(Icons.volume_up_outlined, 'Read aloud', () => _tts.speak(text)),
+      ],
     );
   }
 
   /// Lets the user cut a long reply short. On-device generation can run for a
   /// while, so waiting it out should not be the only option.
   Widget _buildStopButton() => Padding(
-        padding: const EdgeInsets.only(bottom: 4),
+        padding: const EdgeInsets.only(bottom: 8),
         child: Center(
-          child: TextButton.icon(
+          child: OutlinedButton.icon(
             onPressed: _stopRequested
                 ? null
                 : () => setState(() => _stopRequested = true),
             icon: const Icon(Icons.stop_circle_outlined, size: 18),
             label: Text(_stopRequested ? 'Stopping…' : 'Stop generating'),
+            style: OutlinedButton.styleFrom(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            ),
           ),
         ),
       );
 
   Widget _buildStatusLine(String label) => Padding(
-        padding: const EdgeInsets.all(8),
-        child: Text(
-          label,
-          style: const TextStyle(
-            fontStyle: FontStyle.italic,
-            color: Colors.grey,
-          ),
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Center(
+          child: Text(label, style: Theme.of(context).textTheme.bodySmall),
         ),
       );
 
   Widget _buildComposer() {
     final theme = Theme.of(context);
+    final gradients = AppGradients.of(context);
     final busy = _isProcessing || _isTranscribing;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
-      child: TextField(
-        controller: _textController,
-        enabled: !busy,
-        textInputAction: TextInputAction.send,
-        onSubmitted: _sendMessage,
-        decoration: InputDecoration(
-          isDense: true,
-          contentPadding:
-              const EdgeInsets.symmetric(vertical: 10, horizontal: 14),
-          hintText: 'Type a message…',
-          filled: true,
-          fillColor: theme.colorScheme.surfaceContainerHighest,
-          border: OutlineInputBorder(
-            borderRadius: BorderRadius.circular(25),
-            borderSide: BorderSide.none,
-          ),
-          suffixIcon: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (_sttEnabled)
-                IconButton(
-                  tooltip: _isRecording ? 'Stop recording' : 'Record',
-                  icon: Icon(
-                    _isRecording ? Icons.stop : Icons.mic,
-                    color: _isRecording
-                        ? theme.colorScheme.error
-                        : theme.colorScheme.onSurface,
-                  ),
-                  onPressed: _isTranscribing ? null : _toggleRecording,
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(18, 4, 4, 4),
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(28),
+          border: Border.all(color: gradients.hairline),
+        ),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.end,
+          children: [
+            Expanded(
+              child: TextField(
+                controller: _textController,
+                enabled: !busy,
+                textInputAction: TextInputAction.send,
+                onSubmitted: _sendMessage,
+                maxLines: 5,
+                minLines: 1,
+                style: theme.textTheme.bodyMedium,
+                decoration: InputDecoration(
+                  isDense: true,
+                  filled: false,
+                  border: InputBorder.none,
+                  enabledBorder: InputBorder.none,
+                  focusedBorder: InputBorder.none,
+                  disabledBorder: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                  hintText: 'Send message…',
+                  hintStyle: theme.textTheme.bodyMedium
+                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
                 ),
-              IconButton(
-                tooltip: 'Send',
-                icon: Icon(Icons.send, color: theme.colorScheme.onSurface),
-                onPressed:
-                    busy ? null : () => _sendMessage(_textController.text),
               ),
-            ],
-          ),
+            ),
+            if (_sttEnabled)
+              IconButton(
+                tooltip: _isRecording ? 'Stop recording' : 'Record',
+                icon: Icon(
+                  _isRecording ? Icons.stop : Icons.mic,
+                  size: 22,
+                  color: _isRecording
+                      ? theme.colorScheme.error
+                      : theme.colorScheme.onSurfaceVariant,
+                ),
+                onPressed: _isTranscribing ? null : _toggleRecording,
+              ),
+            GradientIconButton(
+              icon: Icons.send,
+              tooltip: 'Send',
+              size: 42,
+              glow: true,
+              onPressed: busy ? null : () => _sendMessage(_textController.text),
+            ),
+          ],
         ),
       ),
     );
   }
 
   Widget _buildDrawer() {
+    final theme = Theme.of(context);
+
     return Drawer(
-      child: SafeArea(
-        child: Column(
-          children: [
-            ListTile(
-              leading: const Icon(Icons.add_comment),
-              title: const Text('New chat'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _startNewConversation();
-              },
+      child: Column(
+        children: [
+          _buildDrawerHeader(),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 4, 12, 4),
+            child: Column(
+              children: [
+                ListTile(
+                  leading: const Icon(Icons.add_comment),
+                  title: const Text('New chat'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _startNewConversation();
+                  },
+                ),
+                ListTile(
+                  leading: const Icon(Icons.tune),
+                  title: const Text('Settings & models'),
+                  onTap: () async {
+                    Navigator.pop(context);
+                    await _openSettings();
+                  },
+                ),
+              ],
             ),
-            ListTile(
-              leading: const Icon(Icons.settings),
-              title: const Text('Settings & models'),
-              onTap: () async {
-                Navigator.pop(context);
-                await _openSettings();
-              },
-            ),
-            const Divider(),
-            if (_saveChatHistory)
-              Expanded(child: _buildHistoryList())
-            else
-              const Expanded(
-                child: Center(
-                  child: Padding(
-                    padding: EdgeInsets.all(24),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 8),
+            child: Row(
+              children: [
+                Text(
+                  'History',
+                  style: theme.textTheme.titleMedium,
+                ),
+                const Spacer(),
+                if (_saveChatHistory)
+                  Flexible(
                     child: Text(
-                      'Chat history is turned off.',
-                      textAlign: TextAlign.center,
+                      'On this device',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall,
                     ),
+                  ),
+              ],
+            ),
+          ),
+          if (_saveChatHistory)
+            Expanded(child: _buildHistoryList())
+          else
+            Expanded(
+              child: Center(
+                child: Padding(
+                  padding: const EdgeInsets.all(24),
+                  child: Text(
+                    'Chat history is turned off.',
+                    textAlign: TextAlign.center,
+                    style: theme.textTheme.bodySmall,
                   ),
                 ),
               ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  /// The gradient wash at the top of the drawer, echoing the accent used for
+  /// the user's own messages.
+  Widget _buildDrawerHeader() {
+    final theme = Theme.of(context);
+    final gradients = AppGradients.of(context);
+
+    return Container(
+      width: double.infinity,
+      padding: EdgeInsets.fromLTRB(
+        24,
+        MediaQuery.of(context).padding.top + 28,
+        24,
+        24,
+      ),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+            gradients.bubble.colors.first.withValues(alpha: 0.55),
+            gradients.bubble.colors.last.withValues(alpha: 0.22),
+            theme.colorScheme.surface.withValues(alpha: 0),
           ],
         ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const SparkAvatar(size: 40),
+          const SizedBox(height: 14),
+          Text('Private by design', style: theme.textTheme.titleLarge),
+          const SizedBox(height: 4),
+          Text(
+            'Every model runs offline, on this phone.',
+            style: theme.textTheme.bodySmall
+                ?.copyWith(color: theme.colorScheme.onSurface.withValues(alpha: 0.75)),
+          ),
+        ],
       ),
     );
   }
@@ -709,7 +933,13 @@ class ChatScreenState extends State<ChatScreen> {
   Future<List<Conversation>>? _historyFuture;
 
   void _refreshHistory() {
-    setState(() => _historyFuture = _conversationService.getConversations());
+    // Started outside setState and assigned in a block body: an arrow closure
+    // here returns the assignment's value — the future itself — and setState
+    // rejects a callback that returns one.
+    final history = _conversationService.getConversations();
+    setState(() {
+      _historyFuture = history;
+    });
   }
 
   Widget _buildHistoryList() {
@@ -722,34 +952,50 @@ class ChatScreenState extends State<ChatScreen> {
           return const Center(child: CircularProgressIndicator());
         }
 
+        final theme = Theme.of(context);
         final conversations = snapshot.data!;
         if (conversations.isEmpty) {
-          return const Center(child: Text('No saved conversations yet.'));
+          return Center(
+            child: Text(
+              'No saved conversations yet.',
+              style: theme.textTheme.bodySmall,
+            ),
+          );
         }
 
         return ListView.builder(
+          padding: const EdgeInsets.fromLTRB(12, 0, 12, 16),
           itemCount: conversations.length,
           itemBuilder: (context, index) {
             final conversation = conversations[index];
             final isCurrent = _currentConversation?.id == conversation.id;
 
             return ListTile(
-              leading: const Icon(Icons.history),
+              contentPadding:
+                  const EdgeInsets.only(left: 12, right: 4),
+              leading: SparkAvatar(
+                size: 30,
+                icon: isCurrent ? Icons.auto_awesome : Icons.history,
+              ),
               title: Text(
                 conversation.title,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
-                style: TextStyle(
-                  fontWeight:
-                      isCurrent ? FontWeight.bold : FontWeight.normal,
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  fontWeight: isCurrent ? FontWeight.w700 : FontWeight.w500,
+                  color: isCurrent
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurface,
                 ),
               ),
-              subtitle:
-                  Text(_conversationService.formatDate(conversation.updatedAt)),
+              subtitle: Text(
+                _conversationService.formatDate(conversation.updatedAt),
+                style: theme.textTheme.bodySmall,
+              ),
               selected: isCurrent,
               trailing: IconButton(
                 tooltip: 'Delete',
-                icon: const Icon(Icons.delete_outline),
+                icon: const Icon(Icons.delete_outline, size: 20),
                 onPressed: () => _confirmDelete(conversation),
               ),
               onTap: () async {
@@ -788,5 +1034,41 @@ class ChatScreenState extends State<ChatScreen> {
       await _startNewConversation();
     }
     if (mounted) _refreshHistory();
+  }
+}
+
+/// A bare icon reads as an afterthought against a near-black bar; a soft filled
+/// disc gives the app bar controls the same weight as the rest of the screen.
+class _CircleIconButton extends StatelessWidget {
+  const _CircleIconButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+
+    return Tooltip(
+      message: tooltip,
+      child: Material(
+        color: theme.colorScheme.surfaceContainerHighest,
+        shape: CircleBorder(side: BorderSide(color: AppGradients.of(context).hairline)),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: onPressed,
+          child: SizedBox(
+            width: 38,
+            height: 38,
+            child: Icon(icon, size: 19, color: theme.colorScheme.onSurface),
+          ),
+        ),
+      ),
+    );
   }
 }

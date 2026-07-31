@@ -71,6 +71,17 @@ class _HfSignInSheetState extends State<_HfSignInSheet> {
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                margin: const EdgeInsets.only(bottom: 20),
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.outline,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
             Text('Connect to Hugging Face', style: theme.textTheme.titleLarge),
             const SizedBox(height: 8),
             Text(
@@ -135,7 +146,6 @@ class _HfSignInSheetState extends State<_HfSignInSheet> {
               decoration: const InputDecoration(
                 labelText: 'Access token',
                 hintText: 'hf_…',
-                border: OutlineInputBorder(),
               ),
               onSubmitted: (_) => _submitToken(),
             ),

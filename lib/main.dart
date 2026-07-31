@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import 'services/asset_bundle_override.dart';
 import 'ui/chat_page.dart';
+import 'ui/theme.dart';
 
 // Re-exported so `package:privai/main.dart` remains the entry point for tests
 // and tooling that already reference ChatScreen from here.
@@ -37,21 +38,8 @@ class _MyAppState extends State<MyApp> {
     return MaterialApp(
       title: 'PrivAI',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
-          brightness: Brightness.light,
-        ),
-        useMaterial3: true,
-      ),
-      darkTheme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: Colors.blue,
-          brightness: Brightness.dark,
-        ),
-        useMaterial3: true,
-        scaffoldBackgroundColor: Colors.black,
-      ),
+      theme: AppTheme.light(),
+      darkTheme: AppTheme.dark(),
       themeMode: _themeMode,
       home: ChatScreen(themeToggleCallback: _toggleTheme),
     );
