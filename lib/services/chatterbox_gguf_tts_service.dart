@@ -79,15 +79,7 @@ class ChatterboxGgufTtsService implements TtsEngine {
   /// user who never asks for speech.
   Future<void> _initialize() async {
     try {
-      final dir = await _storage.bundleDirectory(bundleName);
-      for (final name in [backboneFile, codecFile]) {
-        if (!await File('${dir.path}/$name').exists()) {
-          throw ChatterboxNativeException(
-            'The Chatterbox GGUF model is not fully downloaded ("$name" is '
-            'missing). Open Settings & models to finish the download.',
-          );
-        }
-      }
+      await _requireModelFiles();
 
       final native = ChatterboxNative.open();
       _player ??= AudioPlayer();
@@ -99,6 +91,34 @@ class ChatterboxGgufTtsService implements TtsEngine {
       debugPrint('ChatterboxGgufTtsService: initialisation failed: $e');
       rethrow;
     }
+  }
+
+  /// Throws unless both GGUFs are on disk, naming the one that is not.
+  ///
+  /// Re-checked before every utterance rather than only at initialisation:
+  /// deleting the model from the settings page removes the files underneath a
+  /// service that has already reported itself ready, and the failure then
+  /// surfaces from native code as "flow_lm: model load failed" — which says
+  /// nothing about what is actually wrong.
+  Future<Directory> _requireModelFiles() async {
+    final dir = await _storage.bundleDirectory(bundleName);
+    for (final name in [backboneFile, codecFile]) {
+      if (!await File('${dir.path}/$name').exists()) {
+        _ready = false;
+        _initialization = null;
+        throw ChatterboxNativeException(
+          name == codecFile
+              // This one is never downloaded, so "finish the download" would
+              // send the user somewhere that cannot help them.
+              ? 'The Chatterbox codec model ("$name") is missing. It has to be '
+                  'converted and copied into the chatterbox-gguf folder by '
+                  'hand — deleting the model from this page removes it too.'
+              : 'The Chatterbox GGUF model is not fully downloaded ("$name" is '
+                  'missing). Open Settings & models to finish the download.',
+        );
+      }
+    }
+    return dir;
   }
 
   @override
@@ -155,7 +175,9 @@ class ChatterboxGgufTtsService implements TtsEngine {
       {String? referenceWavPath}) async {
     await initialize();
 
-    final dir = await _storage.bundleDirectory(bundleName);
+    // Deliberately re-checked here, not just at initialisation: two stat calls
+    // are nothing against a synthesis that runs for tens of seconds.
+    final dir = await _requireModelFiles();
     final threads = _threadCount();
     final useGpu = await _settings.chatterboxGgufUseGpu;
     final exaggeration = await _settings.chatterboxExaggeration;
