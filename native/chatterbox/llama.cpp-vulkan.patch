@@ -1,0 +1,21 @@
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0ab9f1..49d5e5d 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -6334,7 +6334,15 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             throw std::runtime_error("Unsupported device");
+         }
+ 
+-        device_extensions.push_back("VK_KHR_16bit_storage");
++        // Promoted to core in Vulkan 1.1. A 1.1+ driver may therefore support
++        // the feature — checked just above via storageBuffer16BitAccess —
++        // without advertising the extension string, and asking for an
++        // extension the device does not advertise fails createDevice with
++        // ErrorExtensionNotPresent. Only request it when it is really an
++        // extension here.
++        if (fp16_storage) {
++            device_extensions.push_back("VK_KHR_16bit_storage");
++        }
+ 
+ #ifdef GGML_VULKAN_VALIDATE
+         device_extensions.push_back("VK_KHR_shader_non_semantic_info");

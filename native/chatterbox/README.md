@@ -42,7 +42,7 @@ emulator.
 | Linux x86_64 | yes | yes | 60 ms/token, 8 threads |
 | Android x86_64 (emulator) | yes | yes | 308 ms/token via CLI, 496 in-app at 3 threads |
 | Android arm64 | yes | untested | — |
-| Android + Vulkan | yes | **crashes on the emulator** | — |
+| Android + Vulkan | yes | yes | 153 ms/token (emulator, dGPU passthrough) |
 | iOS | **unverified** | — | — |
 
 **The iOS support has never been compiled.** It was written on a Linux machine
@@ -79,48 +79,55 @@ measurement.
 
 ## Vulkan on Android
 
-It builds, and it is **off by default**, selected at build time:
+Works, and built in by default. The in-app switch selects it at runtime.
 
-```bash
-flutter build apk --debug -Pchatterbox.vulkan=true
-```
+Measured on the emulator (x86_64, GPU passed through to an RTX 5080), two
+points per configuration:
 
-Off is not caution. **ggml registers and initialises a Vulkan device when the
-library loads**, before anything asks for a GPU, so on a device whose Vulkan
-lacks an extension it wants the process dies — a Vulkan build crashes even
-with the in-app switch off. Measured on the emulator, whose GPU passthrough
-reports no fp16 and no integer dot product:
+| | per token | fixed |
+| --- | --- | --- |
+| Vulkan | **153 ms** | ~20.5 s |
+| CPU, 4 threads | 270 ms | ~20.8 s |
 
-```
-ggml_vulkan: Found 1 Vulkan devices:
-ggml_vulkan: 0 = NVIDIA GeForce RTX 5080 | uma: 0 | fp16: 0 | int dot: 0 | matrix cores: none
-llama_model_load: error loading model: vk::PhysicalDevice::createDevice: ErrorExtensionNotPresent
-Segmentation fault
-```
+Do not read 1.77x as what a phone will do. This pits a virtualised x86 CPU
+against a desktop GPU; a phone has a far weaker GPU sharing a die with a far
+stronger CPU. It does establish that the GPU path runs correctly on Android
+and that dispatch overhead does not automatically sink it — the opposite of
+the desktop result, where a 5080 lost to eight native CPU threads.
 
-That was the **CPU** run. Shipping Vulkan on would need `GGML_BACKEND_DL`, so
-the Vulkan backend becomes a separate object loaded only when the GPU is
-actually requested, and its absence or failure stays recoverable.
+### The bug that made it look impossible
 
-Real hardware may well be fine — phone GPUs generally have the extensions the
-emulator's passthrough does not. The flag exists so that can be tested.
+`ggml_vk_get_device` requested `VK_KHR_16bit_storage` unconditionally, gated
+only on the *feature* `storageBuffer16BitAccess`. That extension was promoted
+to core in Vulkan 1.1, so a 1.1+ driver may support the feature without
+advertising the extension string — and asking for an unadvertised extension
+fails `createDevice` with `ErrorExtensionNotPresent`. ggml already detects the
+real extension into `fp16_storage`; the fix is to use it.
+See `llama.cpp-vulkan.patch`, which applies to the nested llama.cpp submodule
+(not codec.cpp — a separate patch for a separate repository).
 
-What it took to compile at all, none of it obvious:
+Until that was found, a Vulkan build died at *library load*, before anything
+asked for a GPU, taking the CPU path down with it. That risk is not fully
+gone: ggml still creates a Vulkan device eagerly, so a driver it cannot
+satisfy for some other reason would crash the app even with the switch off.
+Opt out with `-Pchatterbox.vulkan=false`. Making it survivable would need
+`GGML_BACKEND_DL`, so the backend loads only when the GPU is requested.
+
+### What it took to compile
 
 - **Vulkan-Hpp is not in the NDK**, which ships only the C headers.
 - **The version is not free.** Vulkan-Hpp static-asserts `VK_HEADER_VERSION`
   against the C headers it sits on (the NDK's are 275), and releases past
   ~1.3.275 dropped API this llama.cpp uses — it streams a `vk::Buffer` to an
-  ostream in its memory logging. `CMakeLists.txt` fetches exactly 1.3.275;
-  the distro's copy (341 here) fails both ways.
+  ostream. `CMakeLists.txt` fetches exactly 1.3.275; the distro's 341 fails
+  both ways.
 - **`spirv/unified1/spirv.hpp` is included directly**, and
-  `find_package(SPIRV-Headers)` does not put that directory on the compile
-  line for that translation unit.
-- **`SPIRV-Headers` is not findable at all** from the nested build, because the
-  NDK toolchain sets `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY`.
+  `find_package(SPIRV-Headers)` does not put it on that file's compile line.
+- **`SPIRV-Headers` is invisible** to the nested build, because the NDK
+  toolchain sets `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY`.
 - **ggml-vulkan does not compile for 32-bit.** Non-dispatchable handles are
-  `uint64_t` there, which makes Vulkan-Hpp's conversion explicit and breaks
-  that same ostream call. The build is arm64-v8a and x86_64 only, set through
+  `uint64_t` there, making Vulkan-Hpp's conversion explicit and breaking that
+  same ostream call. 64-bit only, set through
   `externalNativeBuild.cmake.abiFilters` — the `ndk` block alone does not
   decide which ABIs CMake runs for.
 

@@ -791,9 +791,9 @@ class _ModelsPageState extends State<ModelsPage> {
           SwitchListTile(
             title: const Text('Use the GPU for speech'),
             subtitle: const Text(
-              'Measured slower than the CPU on desktop hardware — speech is '
+              'Faster on some devices and slower on others: speech is '
               'generated one token at a time, which never fills a GPU. Worth '
-              'trying on this device.',
+              'timing both ways on this device.',
             ),
             value: _ggufUseGpu,
             onChanged: (value) async {

@@ -1,0 +1,8 @@
+# Read by `flutter test`. The previous flutter_test_config.yaml was never loaded
+# by any tool — Flutter looks for dart_test.yaml (config) or
+# flutter_test_config.dart (a Dart setup hook), not that name.
+timeout: 60s
+
+tags:
+  slow:
+    timeout: 5m

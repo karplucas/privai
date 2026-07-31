@@ -15,10 +15,11 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
 def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0'
 
-// -Pchatterbox.vulkan=true builds the GPU backend into the speech engine.
-// See the note in defaultConfig before turning this on by default.
-def chatterboxVulkan = (project.findProperty('chatterbox.vulkan') ?: 'false')
-        .toString().equalsIgnoreCase('true') ? 'ON' : 'OFF' 
+// Vulkan is built in by default so the in-app GPU switch can be tested on a
+// device. Opt out with -Pchatterbox.vulkan=false; see the note in
+// defaultConfig for when that matters.
+def chatterboxVulkan = (project.findProperty('chatterbox.vulkan') ?: 'true')
+        .toString().equalsIgnoreCase('true') ? 'ON' : 'OFF'
 
 android {
     // Matches the package declared by MainActivity.kt.
@@ -68,22 +69,15 @@ android {
                 // anything — without it that switch sets n_gpu_layers on a
                 // binary with no GPU backend and silently stays on the CPU.
                 //
-                // OFF by default, and not merely out of caution: ggml
-                // registers and initialises a Vulkan device when the library
-                // loads, before anything asks for a GPU. On a device whose
-                // Vulkan lacks an extension it wants, that fails and takes the
-                // process down — so a Vulkan build crashes even with the
-                // in-app switch off. Measured on the emulator, whose
-                // passthrough reports no fp16 and no integer dot product:
-                // "createDevice: ErrorExtensionNotPresent", then SIGSEGV, on
-                // the CPU path.
+                // ON, but note that ggml creates a Vulkan device when the
+                // library loads, before anything asks for a GPU. A device
+                // that cannot be created takes the process down with it, so a
+                // driver ggml cannot satisfy crashes the app even with the
+                // in-app switch off. Opt out with:
+                //   flutter build apk -Pchatterbox.vulkan=false
                 //
-                // Build one to test on real hardware with:
-                //   flutter build apk --debug -Pchatterbox.vulkan=true
-                //
-                // Shipping it on would need GGML_BACKEND_DL, so the Vulkan
-                // backend is a separate object loaded only when the GPU is
-                // actually requested.
+                // Making that failure survivable would need GGML_BACKEND_DL,
+                // so the Vulkan backend loads only when the GPU is requested.
                 arguments "-DANDROID_STL=c++_shared",
                           "-DCMAKE_BUILD_TYPE=Release",
                           "-DCHATTERBOX_VULKAN=${chatterboxVulkan}"
