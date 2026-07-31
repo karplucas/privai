@@ -1,15 +1,16 @@
 diff --git a/cmake/SetupTtsBackbone.cmake b/cmake/SetupTtsBackbone.cmake
-index f88f7dc..e2adfb0 100644
+index f88f7dc..5a25076 100644
 --- a/cmake/SetupTtsBackbone.cmake
 +++ b/cmake/SetupTtsBackbone.cmake
-@@ -1,3 +1,6 @@
+@@ -1,3 +1,7 @@
 +# Vulkan for the ISOLATED backbone, independent of codec.cpp's own ggml.
 +option(CODEC_BACKBONE_VULKAN "Build the tts backbone with Vulkan" OFF)
++option(CODEC_BACKBONE_METAL  "Build the tts backbone with Metal (Apple)" OFF)
 +
  # SetupTtsBackbone.cmake — build an ISOLATED llama.cpp backbone for tts-cli.
  #
  # codec.cpp links ggml 0.9 (the standalone ggml submodule) as a shared
-@@ -18,6 +21,28 @@
+@@ -18,6 +22,49 @@
  
  include(ExternalProject)
  
@@ -29,26 +30,76 @@ index f88f7dc..e2adfb0 100644
 +    endif()
 +endforeach()
 +
-+# GGML_NATIVE probes the *build* machine's ISA, which is meaningless and often
-+# fatal when the target is a phone.
++# GGML_NATIVE probes the *build* machine's ISA, which is meaningless when the
++# target is a phone: it emits -mcpu=native, which the NDK's clang rejects
++# outright.
++set(_ll_native ON)
 +if(CMAKE_CROSSCOMPILING)
-+    list(APPEND _ll_cross_args "-DGGML_NATIVE=OFF")
++    set(_ll_native OFF)
++endif()
++
++if(APPLE)
++    # Metal ships its shaders as a .metal source located at runtime;
++    # embedding compiles them into the archive instead, which is the only
++    # workable form inside an app bundle.
++    list(APPEND _ll_cross_args
++        "-DGGML_METAL=${CODEC_BACKBONE_METAL}"
++        "-DGGML_METAL_EMBED_LIBRARY=ON"
++        "-DGGML_BLAS=OFF")
++endif()
++
++if(ANDROID)
++    # ggml's llamafile sgemm reaches for fp16 vector intrinsics (vld1q_f16)
++    # that need -march=armv8.2-a+fp16. Requiring that would exclude devices
++    # this app otherwise supports at minSdk 26, and the path it accelerates is
++    # batched matmul — precisely what single-token autoregressive decode never
++    # does. Turned off for reach, at no measurable cost to this workload.
++    list(APPEND _ll_cross_args "-DGGML_LLAMAFILE=OFF")
 +endif()
 +
  set(_ll_dir      "${CMAKE_CURRENT_SOURCE_DIR}/common/third-party/llama.cpp")
  set(_ll_prefix   "${CMAKE_BINARY_DIR}/llama-static")
  set(_ll_libdir   "${_ll_prefix}/src/llama-build/src")
-@@ -48,11 +73,31 @@ set(_ll_archives
+@@ -48,11 +95,60 @@ set(_ll_archives
      "${_ll_ggmldir}/libggml-cpu.a"
      "${_ll_ggmldir}/libggml-base.a")
  
 +# The Vulkan backend is a separate archive; without it the wrapper link
 +# fails on an undefined ggml_backend_vk_reg (the registry in libggml.a
 +# references it unconditionally once the backend is compiled in).
++# Android folds pthreads into libc and has no libpthread to link against.
++set(_ll_sys_libs "-lpthread" "-lm" "-ldl")
++if(ANDROID)
++    set(_ll_sys_libs "-lm" "-ldl")
++elseif(APPLE)
++    # ggml reaches for Accelerate unconditionally on Apple, and Metal when it
++    # is enabled; both are frameworks rather than plain libraries.
++    set(_ll_sys_libs "-lm" "-framework" "Accelerate" "-framework" "Foundation")
++    if(CODEC_BACKBONE_METAL)
++        list(APPEND _ll_sys_libs "-framework" "Metal" "-framework" "MetalKit")
++    endif()
++endif()
++
 +set(_ll_omp_lib "-lgomp")
-+if(ANDROID OR APPLE)
-+    # The NDK has no libgomp; ggml falls back to its own threading there.
++if(ANDROID)
++    # The NDK has no libgomp. ggml compiles with -fopenmp=libomp, so the
++    # wrapper has to resolve those symbols; linking it statically avoids
++    # shipping libomp.so in the APK as well.
++    set(_ll_omp_lib "-fopenmp=libomp" "-static-openmp")
++elseif(APPLE)
 +    set(_ll_omp_lib "")
++endif()
++
++# The wrapper is linked by invoking the compiler directly, which means it does
++# NOT inherit the target CMake would normally pass. The NDK's clang defaults to
++# the host, so without these the arm64 archives are fed to an x86-64 link and
++# every object is rejected as "incompatible with elf64-x86-64".
++set(_ll_target_flags "")
++if(CMAKE_CXX_COMPILER_TARGET)
++    list(APPEND _ll_target_flags "--target=${CMAKE_CXX_COMPILER_TARGET}")
++endif()
++if(CMAKE_SYSROOT)
++    list(APPEND _ll_target_flags "--sysroot=${CMAKE_SYSROOT}")
 +endif()
 +
 +set(_ll_extra_libs "")
@@ -70,24 +121,74 @@ index f88f7dc..e2adfb0 100644
          -DCMAKE_BUILD_TYPE=Release
          -DBUILD_SHARED_LIBS=OFF
          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-@@ -65,7 +110,7 @@ ExternalProject_Add(llama_static
+@@ -64,8 +160,8 @@ ExternalProject_Add(llama_static
+         -DLLAMA_BUILD_COMMON=ON
          -DLLAMA_CURL=OFF
          -DLLAMA_OPENSSL=OFF
-         -DGGML_NATIVE=ON
+-        -DGGML_NATIVE=ON
 -        -DGGML_VULKAN=OFF
++        -DGGML_NATIVE=${_ll_native}
 +        -DGGML_VULKAN=${CODEC_BACKBONE_VULKAN}
          -DGGML_BACKEND_DL=OFF
      BUILD_COMMAND   ${CMAKE_COMMAND} --build <BINARY_DIR> --target llama-common --config Release
      BUILD_BYPRODUCTS ${_ll_archives}
-@@ -92,7 +137,7 @@ add_custom_command(
-     COMMAND ${CMAKE_CXX_COMPILER} -shared -fPIC -o "${TTS_BACKBONE_SO}"
-             -Wl,--whole-archive ${_ll_archives} -Wl,--no-whole-archive
-             -Wl,--version-script=${_ll_vscript}
+@@ -85,15 +181,44 @@ set(_ll_vscript "${CMAKE_BINARY_DIR}/ttsbackbone.map")
+ file(WRITE "${_ll_vscript}"
+ "{\n  global:\n    llama_*;\n    extern \"C++\" {\n      common_sampler*;\n    };\n  local:\n    *;\n};\n")
+ 
+-set(TTS_BACKBONE_SO "${CMAKE_BINARY_DIR}/ttsbackbone/libttsbackbone.so")
++# Apple's linker has no version scripts. -exported_symbols_list is the
++# equivalent — anything unlisted becomes local — and it takes MANGLED names
++# with the leading underscore, so the C++ sampler API is matched by glob
++# rather than by an extern "C++" block.
++#
++# Worth knowing: this hiding is belt-and-braces on Apple, not load-bearing as
++# it is on ELF. Mach-O uses a two-level namespace, so each dylib records which
++# library every symbol it imports comes from; two copies of ggml cannot
++# interpose on one another the way they do with ELF's flat global namespace.
++set(_ll_symlist "${CMAKE_BINARY_DIR}/ttsbackbone.symbols")
++file(WRITE "${_ll_symlist}" "_llama_*\n*common_sampler*\n")
++
++if(APPLE)
++    set(TTS_BACKBONE_SO "${CMAKE_BINARY_DIR}/ttsbackbone/libttsbackbone.dylib")
++    set(_ll_shared_flag "-dynamiclib")
++    # --whole-archive/--no-whole-archive do not exist in ld64; -all_load is
++    # the equivalent and applies to every archive on the line, which is what
++    # is wanted here anyway.
++    set(_ll_whole_begin "-Wl,-all_load")
++    set(_ll_whole_end   "")
++    set(_ll_vis_flag    "-Wl,-exported_symbols_list,${_ll_symlist}")
++    # Loaded from inside the app bundle's Frameworks directory.
++    list(APPEND _ll_vis_flag "-Wl,-install_name,@rpath/libttsbackbone.dylib")
++else()
++    set(TTS_BACKBONE_SO "${CMAKE_BINARY_DIR}/ttsbackbone/libttsbackbone.so")
++    set(_ll_shared_flag "-shared")
++    set(_ll_whole_begin "-Wl,--whole-archive")
++    set(_ll_whole_end   "-Wl,--no-whole-archive")
++    set(_ll_vis_flag    "-Wl,--version-script=${_ll_vscript}")
++endif()
+ add_custom_command(
+     OUTPUT  "${TTS_BACKBONE_SO}"
+     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/ttsbackbone"
+-    COMMAND ${CMAKE_CXX_COMPILER} -shared -fPIC -o "${TTS_BACKBONE_SO}"
+-            -Wl,--whole-archive ${_ll_archives} -Wl,--no-whole-archive
+-            -Wl,--version-script=${_ll_vscript}
 -            -lpthread -lm -ldl -lgomp
-+            -lpthread -lm -ldl ${_ll_omp_lib} ${_ll_extra_libs}
-     DEPENDS llama_static ${_ll_archives} "${_ll_vscript}"
+-    DEPENDS llama_static ${_ll_archives} "${_ll_vscript}"
++    COMMAND ${CMAKE_CXX_COMPILER} ${_ll_target_flags} ${_ll_shared_flag} -fPIC -o "${TTS_BACKBONE_SO}"
++            ${_ll_whole_begin} ${_ll_archives} ${_ll_whole_end}
++            ${_ll_vis_flag}
++            ${_ll_sys_libs} ${_ll_omp_lib} ${_ll_extra_libs}
++    DEPENDS llama_static ${_ll_archives} "${_ll_vscript}" "${_ll_symlist}"
      COMMENT "Linking isolated llama backbone → libttsbackbone.so (ggml_* hidden)"
      VERBATIM)
+ add_custom_target(ttsbackbone DEPENDS "${TTS_BACKBONE_SO}")
+diff --git a/common/third-party/llama.cpp b/common/third-party/llama.cpp
+--- a/common/third-party/llama.cpp
++++ b/common/third-party/llama.cpp
+@@ -1 +1 @@
+-Subproject commit f708a5b2caaee0226c0af220e366785699ba41e2
++Subproject commit f708a5b2caaee0226c0af220e366785699ba41e2-dirty
 diff --git a/common/tts_runner.cpp b/common/tts_runner.cpp
 index f702e70..03c8d77 100644
 --- a/common/tts_runner.cpp

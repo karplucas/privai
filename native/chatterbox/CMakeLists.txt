@@ -35,6 +35,11 @@ endif()
 # transfer, and that case is untested.
 option(CHATTERBOX_VULKAN "Build the decode backbone with Vulkan" OFF)
 
+# Metal is the Apple equivalent, and the one case where GPU offload might yet
+# pay: unified memory means there is no transfer to repay per dispatch, which
+# is what made Vulkan a loss on a discrete GPU. Untested.
+option(CHATTERBOX_METAL "Build the decode backbone with Metal (Apple)" OFF)
+
 # Upstream defines the codec_tts_runner library — the reference host loop this
 # shim wraps — inside its `if(CODEC_BUILD_TTS_CLI)` block, so the flag has to
 # stay on even though the CLI binary itself is of no use to us.
@@ -42,6 +47,15 @@ set(CODEC_BUILD_TTS_CLI ON  CACHE BOOL "" FORCE)
 set(CODEC_TTS_BACKBONE  ON  CACHE BOOL "" FORCE)
 set(GGML_VULKAN         OFF CACHE BOOL "" FORCE)
 set(CODEC_BACKBONE_VULKAN ${CHATTERBOX_VULKAN} CACHE BOOL "" FORCE)
+set(CODEC_BACKBONE_METAL  ${CHATTERBOX_METAL}  CACHE BOOL "" FORCE)
+
+if(APPLE)
+    # codec.cpp's own ggml would otherwise also claim Metal, and two ggml
+    # instances each holding a GPU backend is the configuration that segfaults
+    # on Vulkan. Only the backbone gets an accelerator.
+    set(GGML_METAL     OFF CACHE BOOL "" FORCE)
+    set(GGML_ACCELERATE ON CACHE BOOL "" FORCE)
+endif()
 
 # ggml's x86 SIMD options are on by default and are not meaningful for arm64;
 # NEON is what matters on a phone and is already the default there.

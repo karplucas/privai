@@ -28,8 +28,51 @@ vendor/codec.cpp             submodule
 codec.cpp.patch              local changes to the submodule (see below)
 ```
 
-Android builds this via `android/app/build.gradle`'s `externalNativeBuild`,
-arm64-v8a only — the models need more address space than a 32-bit process has.
+Android builds this via `android/app/build.gradle`'s `externalNativeBuild`.
+Debug builds produce arm64-v8a, armeabi-v7a and x86_64; only arm64 is worth
+shipping, since the models need more address space than a 32-bit process has,
+but the x86_64 slice is what makes the engine usable on an emulator.
+
+## Platform status
+
+| | builds | runs | measured |
+| --- | --- | --- | --- |
+| Linux x86_64 | yes | yes | 60 ms/token, 8 threads |
+| Android x86_64 (emulator) | yes | yes | 308 ms/token, 4 threads |
+| Android arm64 | yes | untested | — |
+| iOS | **unverified** | — | — |
+
+**The iOS support has never been compiled.** It was written on a Linux machine
+with no Xcode, adapted from the working Android build. The CMake parses and the
+build script is syntactically valid; nothing beyond that is known. Treat
+`ios/build_xcframework.sh` as a starting point, not a working build.
+
+What had to change for Apple, and why each is a real difference rather than a
+guess:
+
+- **No version scripts.** `--version-script` is GNU-only; ld64 wants
+  `-exported_symbols_list`, which takes *mangled* names with the leading
+  underscore — hence `_llama_*` and a `*common_sampler*` glob instead of an
+  `extern "C++"` block.
+- **`--whole-archive` does not exist**; `-all_load` is the equivalent, and
+  applies to every archive on the line rather than a bracketed group.
+- **`-shared` → `-dynamiclib`**, plus an `-install_name` of
+  `@rpath/libttsbackbone.dylib` so it resolves from inside the app bundle.
+- **Accelerate and Metal are frameworks**, named with `-framework`, not `-l`.
+- **Metal shaders must be embedded** (`GGML_METAL_EMBED_LIBRARY=ON`); a
+  `.metal` file located at runtime is no use inside a sandboxed app.
+
+One thing that should be *easier* on Apple: the two-ggml collision that
+segfaults under Vulkan is an ELF problem. Mach-O uses a two-level namespace, so
+each dylib records which library every imported symbol comes from, and two
+copies of ggml cannot interpose on each other the way they do with ELF's flat
+global namespace. The symbol hiding is kept anyway, but it is belt-and-braces
+there rather than load-bearing.
+
+Metal is still off by default. It is the one case where GPU offload might pay —
+unified memory means no per-dispatch transfer to repay, which is exactly what
+made Vulkan a loss on a discrete GPU — but that is a hypothesis, not a
+measurement.
 
 ## The submodule patches
 
