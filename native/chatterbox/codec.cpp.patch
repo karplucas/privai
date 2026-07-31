@@ -240,7 +240,7 @@ diff --git a/common/third-party/llama.cpp b/common/third-party/llama.cpp
 -Subproject commit f708a5b2caaee0226c0af220e366785699ba41e2
 +Subproject commit f708a5b2caaee0226c0af220e366785699ba41e2-dirty
 diff --git a/common/tts_runner.cpp b/common/tts_runner.cpp
-index f702e70..03c8d77 100644
+index f702e70..d30adcc 100644
 --- a/common/tts_runner.cpp
 +++ b/common/tts_runner.cpp
 @@ -1095,7 +1095,10 @@ bool tts_runner_synthesize(const tts_runner_params & a, tts_runner_result * out)
@@ -255,6 +255,35 @@ index f702e70..03c8d77 100644
      llama_model * lmodel = llama_model_load_from_file(a.backbone_path.c_str(), mp);
      if (!lmodel) {
          out->error = "llama_model_load_from_file failed: " + a.backbone_path;
+@@ -1119,9 +1122,26 @@ bool tts_runner_synthesize(const tts_runner_params & a, tts_runner_result * out)
+ 
+     const int32_t max_frames = a.max_frames > 0 ? a.max_frames : 512;
+     llama_context_params cp = llama_context_default_params();
+-    cp.n_ctx        = (uint32_t) std::max(4096, max_frames + 512);
++    // Sized to the work, not to a round number. llama.cpp divides n_ctx
++    // across sequences, and Chatterbox needs only the text prompt (~130 rows)
++    // plus max_frames speech tokens per sequence — the 4096 floor reserved
++    // roughly four times that. On a phone the KV cache is the single largest
++    // allocation this engine makes, and n_ubatch drives the compute buffer,
++    // which never sees a batch anywhere near 4096 in a one-token-at-a-time
++    // decode loop.
++    //
++    // 512 rows of headroom above max_frames covers the conditioning prefix
++    // plus the text: Chatterbox's tokenizer is near character-level, and the
++    // longest text that can still fit under max_frames of audio tokenises to
++    // roughly 300 rows. Rounded up to a multiple of n_ubatch because llama.cpp
++    // pads n_ctx down to that, which would otherwise silently hand back fewer
++    // cells than asked for.
++    const uint32_t ubatch  = 512;
++    const int      per_seq = max_frames + 512;
++    const int      rounded = ((per_seq + (int) ubatch - 1) / (int) ubatch) * (int) ubatch;
++    cp.n_ctx        = (uint32_t) std::max((int) ubatch * 2, rounded * cbx_n_seq);
+     cp.n_batch      = cp.n_ctx;
+-    cp.n_ubatch     = cp.n_ctx;
++    cp.n_ubatch     = std::min<uint32_t>(cp.n_batch, ubatch);
+     cp.n_seq_max    = (uint32_t) cbx_n_seq;
+     cp.embeddings   = true;
+     cp.pooling_type = LLAMA_POOLING_TYPE_NONE;
 diff --git a/src/lm/lm.cpp b/src/lm/lm.cpp
 index c0c3d07..2442224 100644
 --- a/src/lm/lm.cpp
