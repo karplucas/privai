@@ -131,8 +131,12 @@ class ModelSpec {
   List<ModelFile> get files =>
       _files ?? [ModelFile(pathInRepo: repoFile, name: filename)];
 
-  /// Whether this model is made of several files in [bundleDirectory].
-  bool get isBundle => (_files?.length ?? 0) > 1;
+  /// Whether this model's files live together in [bundleDirectory].
+  ///
+  /// An explicit directory is enough on its own: an entry can name one file to
+  /// download and still need it beside a second the user supplies themselves,
+  /// and that file has to land in the directory the engine reads.
+  bool get isBundle => bundleDirectory != null || (_files?.length ?? 0) > 1;
 
   /// Download URL for [file].
   Uri urlFor(ModelFile file) {

@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:privai/models/model_spec.dart';
+import 'package:privai/services/tts_engine.dart';
 import 'package:privai/services/chatterbox_tts_service.dart';
 import 'package:privai/services/model_catalog.dart';
 
@@ -169,10 +170,12 @@ void main() {
     });
 
     test('every TTS entry names the engine that consumes it', () {
-      // Two engines now share the tts section, so an entry without an engine
-      // tag could be handed to the wrong runtime.
+      // Several engines share the tts section, so an entry without an engine
+      // tag could be handed to the wrong runtime. Checked against the enum
+      // rather than a list here, so adding an engine cannot leave this stale.
+      final names = TtsEngineKind.values.map((e) => e.name).toList();
       for (final model in catalog.byKind(ModelKind.tts)) {
-        expect(model.engine, anyOf('kokoro', 'chatterbox'),
+        expect(names, contains(model.engine),
             reason: '${model.filename} has no usable engine tag');
       }
     });

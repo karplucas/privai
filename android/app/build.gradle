@@ -37,7 +37,7 @@ android {
     androidResources {
         // MediaPipe memory-maps .task/.litertlm bundles, so they must not be
         // compressed inside the APK.
-        noCompress += ['task', 'litertlm', 'bin', 'onnx']
+        noCompress += ['task', 'litertlm', 'bin', 'onnx', 'gguf']
     }
 
     packagingOptions {
@@ -51,6 +51,31 @@ android {
         targetSdkVersion flutter.targetSdkVersion
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
+
+        externalNativeBuild {
+            cmake {
+                // c++_shared because two shared objects (libchatterbox_ffi and
+                // libttsbackbone) both need the C++ runtime; static copies
+                // would each get their own and break exception handling
+                // across the boundary.
+                arguments "-DANDROID_STL=c++_shared",
+                          "-DCMAKE_BUILD_TYPE=Release"
+                cppFlags "-O3", "-fexceptions"
+            }
+        }
+
+        ndk {
+            // 32-bit is not worth building: the models need well over 2 GB of
+            // address space across llama.cpp and the vocoder.
+            abiFilters 'arm64-v8a'
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path "../../native/chatterbox/CMakeLists.txt"
+            version "3.22.1"
+        }
     }
 
     buildTypes {

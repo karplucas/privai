@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:math';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
@@ -31,10 +30,16 @@ class ChatterboxUnavailableException implements Exception {
 /// 2. `language_model`: `inputs_embeds`,`attention_mask` + 30 layers of KV cache
 ///    -> `logits[1,S,8194]` + `present.*`, decoded autoregressively into speech
 ///    tokens at 25 Hz
-/// 3. `speech_encoder`: reference `audio_values` -> `speaker_embeddings[192]`,
-///    `speaker_features`, cached per voice
-/// 4. `conditional_decoder`: speech tokens + speaker tensors -> 24 kHz waveform,
-///    in a single pass
+/// 3. `speech_encoder`: reference `audio_values` -> `audio_features` (the
+///    conditioning prefix the language model generates against),
+///    `audio_tokens` (the reference's own speech tokens),
+///    `speaker_embeddings[192]` and `speaker_features`, cached per voice
+/// 4. `conditional_decoder`: reference + generated speech tokens + speaker
+///    tensors -> 24 kHz waveform, in a single pass
+///
+/// Step 3 runs first: its conditioning embedding is prepended to the text
+/// embeddings before the language model's prefill, and its tokens are prepended
+/// to the generated ones before the vocoder.
 ///
 /// Measured on a desktop CPU limited to four threads: ~8 ms per token for the
 /// language model and ~1.5 s for the vocoder, so a five-second utterance costs a
@@ -77,6 +82,10 @@ class ChatterboxTtsService implements TtsEngine {
   static const int kvHeads = 16;
   static const int headDim = 64;
 
+  /// Start-of-speech id. Never embedded — the first speech token is sampled
+  /// from the prefill — but the repetition penalty counts it as generated.
+  static const int _startSpeechToken = 6561;
+
   /// End-of-speech ids from the repository's `generation_config.json`.
   static const Set<int> _eosTokens = {2, 6562};
   static const double _repetitionPenalty = 1.2;
@@ -87,7 +96,6 @@ class ChatterboxTtsService implements TtsEngine {
 
   final AppSettings _settings = AppSettings();
   final ModelStorage _storage = ModelStorage();
-  final Random _random = Random();
 
   OrtSession? _embed;
   OrtSession? _language;
@@ -138,8 +146,15 @@ class ChatterboxTtsService implements TtsEngine {
       // recorded inside it, resolved next to the graph — which is why the
       // bundle keeps them in one directory under their original names.
       final ort = OnnxRuntime();
+      final options = await _sessionOptions(ort);
+
+      // Only the language model gets the tuned providers. It is the one graph
+      // in a per-token loop, so it is where the whole of the win is, and the
+      // others have been seen to miscompute under XNNPACK — the speech encoder
+      // failed reshaping a {1} tensor to the S3 tokenizer's {1,150} prompt.
+      _language =
+          await _createSession(ort, '${dir.path}/$languageGraph', options);
       _embed = await ort.createSession('${dir.path}/$embedGraph');
-      _language = await ort.createSession('${dir.path}/$languageGraph');
       _decoder = await ort.createSession('${dir.path}/$decoderGraph');
 
       final encoderPath = '${dir.path}/$speechEncoderGraph';
@@ -159,6 +174,51 @@ class ChatterboxTtsService implements TtsEngine {
       _initialization = null;
       debugPrint('ChatterboxTtsService: initialisation failed: $e');
       rethrow;
+    }
+  }
+
+  /// Execution providers and thread count for the language model.
+  ///
+  /// The CPU provider, parallelised across the cores. The two alternatives this
+  /// runtime reports were both tried and are worse here:
+  ///
+  /// * **XNNPACK** takes its thread count from an `intra_op_num_threads` entry
+  ///   in the provider options map, and `flutter_onnxruntime` hardcodes that
+  ///   map empty — so it runs single-threaded and cannot be told otherwise
+  ///   from Dart. Measured 1100 ms per token against 700 ms for plain CPU. It
+  ///   also miscomputed the speech encoder, failing to reshape a {1} tensor to
+  ///   the S3 tokenizer's {1,150} prompt.
+  /// * **NNAPI** partitions a dynamically shaped, heavily quantised graph like
+  ///   this one badly, and the round trip through the driver costs more than
+  ///   it saves.
+  Future<OrtSessionOptions> _sessionOptions(OnnxRuntime ort) async {
+    try {
+      final available = await ort.getAvailableProviders();
+      debugPrint('ChatterboxTtsService: providers available: '
+          '${available.map((p) => p.name).join(', ')}');
+    } catch (e) {
+      debugPrint('ChatterboxTtsService: could not list providers: $e');
+    }
+
+    return OrtSessionOptions(
+      providers: const [OrtProvider.CPU],
+      intraOpNumThreads: Platform.numberOfProcessors,
+    );
+  }
+
+  /// Creates a session with [options], falling back to the runtime's defaults
+  /// if the requested providers are not usable for this graph.
+  Future<OrtSession> _createSession(
+    OnnxRuntime ort,
+    String path,
+    OrtSessionOptions options,
+  ) async {
+    try {
+      return await ort.createSession(path, options: options);
+    } catch (e) {
+      debugPrint('ChatterboxTtsService: ${path.split('/').last} would not load '
+          'with the requested providers ($e); using the defaults');
+      return ort.createSession(path);
     }
   }
 
@@ -187,23 +247,49 @@ class ChatterboxTtsService implements TtsEngine {
     if (text.trim().isEmpty) return;
     await initialize();
 
-    final samples = await synthesise(text);
+    final samples = await synthesise(text, lang: lang);
     if (samples.isEmpty) return;
 
     final file = await _writeWav(samples);
     await stop();
     await _player!.play(DeviceFileSource(file.path));
-    unawaited(_deleteWhenFinished(file));
+    debugPrint('ChatterboxTtsService: playing '
+        '${(samples.length / sampleRate).toStringAsFixed(1)}s from ${file.path}');
+
+    // Playback is awaited rather than left running: the caller unloaded the
+    // language model to make room for this engine and stops it in a `finally`,
+    // so returning early cut the audio off the instant it started.
+    await _awaitPlayback(samples.length / sampleRate);
+    await _delete(file);
+  }
+
+  /// Waits for the current utterance to finish, giving up [seconds] plus a
+  /// margin so a player that never reports completion cannot hang the caller.
+  Future<void> _awaitPlayback(double seconds) async {
+    try {
+      await _player!.onPlayerComplete.first.timeout(
+        Duration(milliseconds: (seconds * 1000).round() + 5000),
+      );
+    } on TimeoutException {
+      debugPrint('ChatterboxTtsService: playback did not report completion');
+    } catch (e) {
+      debugPrint('ChatterboxTtsService: playback error: $e');
+    }
   }
 
   /// Runs the full pipeline and returns 24 kHz mono samples in -1..1.
-  Future<Float32List> synthesise(String text, {String? referenceWavPath}) async {
+  Future<Float32List> synthesise(
+    String text, {
+    String? referenceWavPath,
+    String? lang,
+  }) async {
     await initialize();
     final tokenizer = _tokenizer!;
 
     final speaker = await _conditioning(referenceWavPath);
-    final ids = tokenizer.encode(text);
-    final speechTokens = await _generateSpeechTokens(ids);
+    final tag = await _languageTag(lang);
+    final ids = tokenizer.encode(tag == null ? text : '[$tag]$text');
+    final speechTokens = await _generateSpeechTokens(ids, speaker);
 
     if (speechTokens.isEmpty) {
       debugPrint('ChatterboxTtsService: model produced no speech tokens');
@@ -212,36 +298,78 @@ class ChatterboxTtsService implements TtsEngine {
     return _vocode(speechTokens, speaker);
   }
 
+  /// The `[xx]` tag Chatterbox expects in front of the text, or null when the
+  /// configured language has no tag in the tokenizer's vocabulary.
+  ///
+  /// The app's language codes are Kokoro's — locale tags like `en-us` and
+  /// `pt-br`, plus `cmn` for Mandarin — while Chatterbox uses bare ISO-639-1
+  /// codes, so the two have to be reconciled here.
+  Future<String?> _languageTag(String? override) async {
+    final code = (override ?? await _settings.ttsLanguage).toLowerCase();
+    const aliases = {'cmn': 'zh', 'yue': 'zh'};
+    final base = aliases[code] ?? code.split(RegExp('[-_]')).first;
+    return _tokenizer!.hasToken('[$base]') ? base : null;
+  }
+
   // --------------------------------------------------------------------------
   // Stage 1 + 2: text -> speech tokens
   // --------------------------------------------------------------------------
 
-  Future<List<int>> _generateSpeechTokens(List<int> textIds) async {
+  Future<List<int>> _generateSpeechTokens(
+    List<int> textIds,
+    _SpeakerConditioning speaker,
+  ) async {
     final embed = _embed!;
     final language = _language!;
     const maxTokens = maxSeconds * tokenRateHz;
+    final started = DateTime.now();
 
-    final promptEmbeds = await _runEmbed(embed, textIds, positionOffset: 0);
+    // Positions are `arange(len) - 1`, except that the prompt's own speech
+    // tokens — the `<EXAGGERATION>` opener and the two `<START_SPEECH>` ids the
+    // template closes with — take position 0. Speech tokens then start again at
+    // 1, independent of how long the text was.
+    final textEmbeds = await _embedFlat(
+      embed,
+      textIds,
+      [
+        for (var i = 0; i < textIds.length; i++)
+          textIds[i] >= _startSpeechToken ? 0 : i - 1,
+      ],
+    );
+
+    // The speech encoder's conditioning embedding is prepended to the text
+    // embeddings; it carries the speaker and prosody the language model
+    // generates against. Without it the model is running unconditioned, which
+    // is what made it babble until the token ceiling instead of emitting
+    // end-of-speech.
+    final prefill = Float32List(speaker.condEmbeddings.length + textEmbeds.length)
+      ..setAll(0, speaker.condEmbeddings)
+      ..setAll(speaker.condEmbeddings.length, textEmbeds);
+    final prefillLength = speaker.condFrames + textIds.length;
 
     var past = await _emptyCache();
-    var totalLength = textIds.length;
+    var totalLength = prefillLength;
 
     var logits = await _stepLanguageModel(
       language,
-      embeds: promptEmbeds,
-      sequenceLength: textIds.length,
+      embeds: await OrtValue.fromList(prefill, [1, prefillLength, hiddenSize]),
+      sequenceLength: prefillLength,
       totalLength: totalLength,
       past: past,
       onPresent: (next) => past = next,
     );
 
     final generated = <int>[];
-    final counts = <int, int>{};
-    final started = DateTime.now();
 
-    debugPrint('ChatterboxTtsService: prompt of ${textIds.length} tokens '
-        'prefilled in ${DateTime.now().difference(started).inMilliseconds}ms, '
-        'decoding up to $maxTokens speech tokens');
+    // Tokens the repetition penalty applies to. Seeded with the start-of-speech
+    // id, which the reference counts as the first element of the generated
+    // sequence even though it is never embedded.
+    final seen = <int>{_startSpeechToken};
+
+    debugPrint('ChatterboxTtsService: prefilled ${speaker.condFrames} '
+        'conditioning + ${textIds.length} text positions in '
+        '${DateTime.now().difference(started).inMilliseconds}ms, decoding at '
+        'most $maxTokens speech tokens');
 
     for (var step = 0; step < maxTokens; step++) {
       // Progress is logged periodically so a slow run on a memory-starved
@@ -252,18 +380,14 @@ class ChatterboxTtsService implements TtsEngine {
             '(${(elapsed / step).toStringAsFixed(0)}ms/token, '
             '~${(step / tokenRateHz).toStringAsFixed(1)}s of audio)');
       }
-      final next = _sample(logits, counts);
+      final next = _sample(logits, seen);
       if (_eosTokens.contains(next)) break;
 
       generated.add(next);
-      counts[next] = (counts[next] ?? 0) + 1;
+      seen.add(next);
 
       totalLength += 1;
-      final stepEmbeds = await _runEmbed(
-        embed,
-        [next],
-        positionOffset: totalLength - 1,
-      );
+      final stepEmbeds = await _runEmbed(embed, [next], [step + 1]);
       logits = await _stepLanguageModel(
         language,
         embeds: stepEmbeds,
@@ -280,19 +404,30 @@ class ChatterboxTtsService implements TtsEngine {
     return generated;
   }
 
+  /// Embeddings for [ids] at [positions], read back as a flat float32 buffer so
+  /// the caller can concatenate them with the conditioning prefix.
+  Future<Float32List> _embedFlat(
+    OrtSession session,
+    List<int> ids,
+    List<int> positions,
+  ) async {
+    final value = await _runEmbed(session, ids, positions);
+    final flat = (await value.asFlattenedList()).cast<num>();
+    await value.dispose();
+    return Float32List.fromList([for (final v in flat) v.toDouble()]);
+  }
+
   Future<OrtValue> _runEmbed(
     OrtSession session,
-    List<int> ids, {
-    required int positionOffset,
-  }) async {
+    List<int> ids,
+    List<int> positionIds,
+  ) async {
     final inputIds = await OrtValue.fromList(
       Int64List.fromList(ids),
       [1, ids.length],
     );
     final positions = await OrtValue.fromList(
-      Int64List.fromList(
-        List<int>.generate(ids.length, (i) => positionOffset + i),
-      ),
+      Int64List.fromList(positionIds),
       [1, ids.length],
     );
     final exaggeration = await OrtValue.fromList(
@@ -399,44 +534,24 @@ class ChatterboxTtsService implements TtsEngine {
     }
   }
 
-  /// Temperature/top-p sampling with the repetition penalty from
+  /// Picks the next speech token: greedy, after the repetition penalty from
   /// `generation_config.json`.
-  int _sample(Float32List logits, Map<int, int> counts) {
+  ///
+  /// The reference implementation decodes greedily. Sampling was tried here
+  /// first and is a poor fit for this stage — a single off-distribution token
+  /// derails the rest of the utterance, and it makes the end-of-speech token
+  /// something the decoder can miss.
+  int _sample(Float32List logits, Set<int> seen) {
     final scaled = Float32List.fromList(logits);
 
-    for (final entry in counts.entries) {
-      if (entry.key >= scaled.length) continue;
-      final value = scaled[entry.key];
-      scaled[entry.key] =
+    for (final token in seen) {
+      if (token >= scaled.length) continue;
+      final value = scaled[token];
+      scaled[token] =
           value > 0 ? value / _repetitionPenalty : value * _repetitionPenalty;
     }
 
-    const temperature = 0.8;
-    var maxLogit = double.negativeInfinity;
-    for (final value in scaled) {
-      if (value > maxLogit) maxLogit = value;
-    }
-
-    final probs = Float64List(scaled.length);
-    var sum = 0.0;
-    for (var i = 0; i < scaled.length; i++) {
-      final p = exp((scaled[i] - maxLogit) / temperature);
-      probs[i] = p;
-      sum += p;
-    }
-    if (sum <= 0 || !sum.isFinite) return _argmax(scaled);
-
-    final order = List<int>.generate(scaled.length, (i) => i)
-      ..sort((a, b) => probs[b].compareTo(probs[a]));
-
-    const topP = 0.9;
-    var cumulative = 0.0;
-    final target = _random.nextDouble() * topP * sum;
-    for (final index in order) {
-      cumulative += probs[index];
-      if (cumulative >= target) return index;
-    }
-    return order.first;
+    return _argmax(scaled);
   }
 
   int _argmax(Float32List values) {
@@ -479,23 +594,39 @@ class ChatterboxTtsService implements TtsEngine {
     final outputs = await encoder.run({'audio_values': input});
     await input.dispose();
 
+    // The encoder's four outputs are, in the reference implementation's terms,
+    // (cond_emb, prompt_token, ref_x_vector, prompt_feat). The first two were
+    // being discarded here, which cost the language model its conditioning and
+    // the vocoder its reference prefix.
+    final condEmb = outputs['audio_features'];
+    final promptTokens = outputs['audio_tokens'];
     final embeddings = outputs['speaker_embeddings'];
     final features = outputs['speaker_features'];
-    if (embeddings == null || features == null) {
+    if (condEmb == null ||
+        promptTokens == null ||
+        embeddings == null ||
+        features == null) {
       throw const ChatterboxUnavailableException(
         'The speech encoder returned no speaker conditioning.',
       );
     }
 
-    // audio_tokens/audio_features are not needed downstream.
-    for (final name in const ['audio_tokens', 'audio_features']) {
-      await outputs[name]?.dispose();
-    }
+    // These two are consumed once per utterance rather than passed back into a
+    // graph, so they come across the channel now and the tensors are released.
+    final condFlat = (await condEmb.asFlattenedList()).cast<num>();
+    final condFrames = condEmb.shape.length >= 2 ? condEmb.shape[1] : 0;
+    final prompt = (await promptTokens.asFlattenedList()).cast<num>();
+    await condEmb.dispose();
+    await promptTokens.dispose();
 
     _speaker = _SpeakerConditioning(
       embeddings: embeddings,
       features: features,
-      frameCount: features.shape.length >= 2 ? features.shape[1] : 0,
+      condEmbeddings: Float32List.fromList([
+        for (final v in condFlat) v.toDouble(),
+      ]),
+      condFrames: condFrames,
+      promptTokens: [for (final v in prompt) v.toInt()],
     );
     _speakerSource = source;
     return _speaker!;
@@ -509,9 +640,10 @@ class ChatterboxTtsService implements TtsEngine {
     List<int> speechTokens,
     _SpeakerConditioning speaker,
   ) async {
+    final all = [...speaker.promptTokens, ...speechTokens];
     final tokens = await OrtValue.fromList(
-      Int64List.fromList(speechTokens),
-      [1, speechTokens.length],
+      Int64List.fromList(all),
+      [1, all.length],
     );
 
     final outputs = await _decoder!.run({
@@ -547,12 +679,7 @@ class ChatterboxTtsService implements TtsEngine {
     return file;
   }
 
-  Future<void> _deleteWhenFinished(File file) async {
-    try {
-      await _player?.onPlayerComplete.first;
-    } catch (_) {
-      // Interrupted; the file still needs removing.
-    }
+  Future<void> _delete(File file) async {
     try {
       if (await file.exists()) await file.delete();
     } catch (e) {
@@ -602,15 +729,23 @@ class _SpeakerConditioning {
   _SpeakerConditioning({
     required this.embeddings,
     required this.features,
-    required this.frameCount,
+    required this.condEmbeddings,
+    required this.condFrames,
+    required this.promptTokens,
   });
 
   final OrtValue embeddings;
   final OrtValue features;
 
-  /// Reference mel frames, at twice the speech-token rate. The vocoder consumes
-  /// `frameCount / 2` tokens' worth of prompt and trims it from the output.
-  final int frameCount;
+  /// `cond_emb`, flattened `[condFrames][hiddenSize]`. Prepended to the text
+  /// embeddings before the language model's first pass.
+  final Float32List condEmbeddings;
+
+  final int condFrames;
+
+  /// Speech tokens for the reference audio, prepended to the generated ones so
+  /// the vocoder has the voice it is continuing. It trims them from the output.
+  final List<int> promptTokens;
 
   Future<void> dispose() async {
     await embeddings.dispose();

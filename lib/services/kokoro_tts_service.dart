@@ -10,6 +10,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
 import 'asset_bundle_override.dart';
+import 'model_catalog.dart';
 import 'model_storage.dart';
 import 'tts_engine.dart';
 import 'voice_pack_service.dart';
@@ -118,11 +119,11 @@ class KokoroTtsService implements TtsEngine {
       return modelAsset;
     }
 
-    final filename = await _settings.selectedTtsModel;
-    if (filename == null || filename.isEmpty) {
+    final filename = await _selectedKokoroModel();
+    if (filename == null) {
       throw const TtsUnavailableException(
-        'No text-to-speech model is selected. Open Settings & models to '
-        'download one.',
+        'No Kokoro voice model is selected. Open Settings & models to '
+        'download one, or switch the speech engine.',
       );
     }
 
@@ -192,9 +193,37 @@ class KokoroTtsService implements TtsEngine {
   Future<bool> get isStale async {
     final loaded = _loadedModelPath;
     if (loaded == null || loaded == modelAsset) return false;
-    final selected = await _settings.selectedTtsModel;
+    final selected = await _selectedKokoroModel();
     if (selected == null) return true;
     return loaded != await _storage.pathFor(selected);
+  }
+
+  /// The selected text-to-speech model, or null when it is not one this engine
+  /// can load.
+  ///
+  /// The models page stores one selection for all TTS models regardless of
+  /// which engine consumes them, so picking Chatterbox leaves its bundle
+  /// directory in the same setting Kokoro reads. Loading that as ONNX weights
+  /// failed with a misleading "the voice model has not been downloaded yet",
+  /// naming a model that was in fact downloaded and in use.
+  Future<String?> _selectedKokoroModel() async {
+    final filename = await _settings.selectedTtsModel;
+    if (filename == null || filename.isEmpty) return null;
+
+    try {
+      final spec = (await ModelCatalog().load()).byFilename(filename);
+      final engine = spec?.engine;
+      if (engine != null && engine != TtsEngineKind.kokoro.name) {
+        debugPrint(
+          'KokoroTtsService: ignoring "$filename", which belongs to $engine',
+        );
+        return null;
+      }
+    } catch (e) {
+      // An unreadable catalog says nothing about the selection; try it.
+      debugPrint('KokoroTtsService: could not check the catalog: $e');
+    }
+    return filename;
   }
 
   /// Speaks [text], using the configured voice, speed and language unless they

@@ -29,6 +29,8 @@ dependencies:
   url_launcher: ^6.2.0
   # PKCE code challenge for the Hugging Face OAuth flow.
   crypto: ^3.0.3
+  # Utf8/calloc helpers for the Chatterbox GGUF engine's dart:ffi boundary.
+  ffi: ^2.2.0
 
 dev_dependencies:
   flutter_test:

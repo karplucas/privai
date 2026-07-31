@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import 'app_settings.dart';
+import 'chatterbox_gguf_tts_service.dart';
 import 'chatterbox_tts_service.dart';
 import 'kokoro_tts_service.dart';
 import 'llm_service.dart';
@@ -24,6 +25,7 @@ class TtsRouter {
   TtsEngine engineFor(TtsEngineKind kind) => switch (kind) {
         TtsEngineKind.kokoro => KokoroTtsService(),
         TtsEngineKind.chatterbox => ChatterboxTtsService(),
+        TtsEngineKind.chatterboxGguf => ChatterboxGgufTtsService(),
       };
 
   /// The engine the user has selected.

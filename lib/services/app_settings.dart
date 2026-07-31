@@ -35,6 +35,7 @@ class AppSettings {
   static const _kHfToken = 'hf_token';
   static const _kTtsEngine = 'tts_engine';
   static const _kChatterboxExaggeration = 'chatterbox_exaggeration';
+  static const _kChatterboxGgufGpu = 'chatterbox_gguf_use_gpu';
 
   // Defaults
   static const String defaultSystemPrompt =
@@ -153,6 +154,19 @@ class AppSettings {
         key: _kChatterboxExaggeration,
         value: value.toString(),
       );
+
+  /// Whether the GGUF engine offloads its decode loop to the GPU.
+  ///
+  /// Off by default on measurement, not assumption: on a discrete GPU it ran
+  /// *slower* than the CPU, because autoregressive decode dispatches one token
+  /// at a time and never assembles a batch wide enough to repay the round
+  /// trip. Left switchable because a phone's unified memory has no such
+  /// transfer to repay, and that case is untested.
+  Future<bool> get chatterboxGgufUseGpu async =>
+      (await _storage.read(key: _kChatterboxGgufGpu)) == 'true';
+
+  Future<void> setChatterboxGgufUseGpu(bool value) =>
+      _storage.write(key: _kChatterboxGgufGpu, value: value.toString());
 
   // --- Hugging Face credentials ---
 

@@ -1,8 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/foundation.dart';
-
 /// Byte-pair tokenizer for Chatterbox, reading Hugging Face `tokenizer.json`.
 ///
 /// Small enough to implement directly: 2,454 vocabulary entries and 265 merges,
@@ -16,6 +14,8 @@ class ChatterboxTokenizer {
     required this.unknownId,
     required this.startId,
     required this.stopId,
+    required this.exaggerationId,
+    required this.startSpeechId,
     required this.spaceId,
     required bool lowercase,
   })  : _vocab = vocab,
@@ -32,6 +32,15 @@ class ChatterboxTokenizer {
   final int unknownId;
   final int startId;
   final int stopId;
+
+  /// Opens every encoding; the embedding graph reads the `exaggeration` input
+  /// at this position.
+  final int? exaggerationId;
+
+  /// Closes every encoding, twice, and hands the language model over to speech
+  /// generation. Ids at or above it are speech tokens, which is also how the
+  /// reference implementation decides a position id is 0.
+  final int? startSpeechId;
 
   /// Token standing in for a space between words, when the vocabulary has one.
   final int? spaceId;
@@ -81,15 +90,40 @@ class ChatterboxTokenizer {
     // trained on. Only fold if the file actually asks for it.
     final lowercase = _declaresLowercase(json['normalizer']);
 
+    // The post-processor, not the vocabulary, defines what wraps an encoding:
+    // `<EXAGGERATION> <s> …text… </s> <START_SPEECH> <START_SPEECH>`. The two
+    // outer ids are not in the vocabulary at all — they address the language
+    // model's speech range — so they can only be read from here.
+    final template = _templateTokens(json['post_processor']);
+
     return ChatterboxTokenizer._(
       vocab: vocab,
       mergeRanks: mergeRanks,
       unknownId: vocab[_unknown] ?? 1,
-      startId: vocab[_start] ?? 1,
-      stopId: vocab[_stop] ?? 0,
+      startId: template['BOS'] ?? vocab[_start] ?? 1,
+      stopId: template['EOS'] ?? vocab[_stop] ?? 0,
+      exaggerationId: template['EXAGGERATION'],
+      startSpeechId: template['START_SPEECH'],
       spaceId: vocab[_space],
       lowercase: lowercase,
     );
+  }
+
+  /// `{name: id}` from the post-processor's special-token table.
+  static Map<String, int> _templateTokens(Object? postProcessor) {
+    final out = <String, int>{};
+    if (postProcessor is! Map<String, dynamic>) return out;
+    final specials = postProcessor['special_tokens'];
+    if (specials is! Map<String, dynamic>) return out;
+
+    specials.forEach((name, entry) {
+      if (entry is! Map<String, dynamic>) return;
+      final ids = entry['ids'];
+      if (ids is List && ids.isNotEmpty && ids.first is num) {
+        out[name] = (ids.first as num).toInt();
+      }
+    });
+    return out;
   }
 
   /// Walks a normalizer definition, which may be a single entry or a Sequence,
@@ -109,40 +143,63 @@ class ChatterboxTokenizer {
     );
   }
 
-  /// Encodes [text], wrapped in the start/stop tokens the model expects.
+  /// Encodes [text] as the model's post-processor template does:
+  /// `<EXAGGERATION> <s> …text… </s> <START_SPEECH> <START_SPEECH>`.
+  ///
+  /// The trailing pair is what puts the language model into speech generation.
+  /// Emitting only `[START]`/`[STOP]` — as this did — leaves it continuing text
+  /// instead, which decodes to a drone that never reaches end-of-speech.
   List<int> encode(String text, {bool addSpecialTokens = true}) {
-    final ids = <int>[if (addSpecialTokens) startId];
-
-    final words = _preTokenize(text);
-    for (var i = 0; i < words.length; i++) {
-      if (i > 0 && spaceId != null) ids.add(spaceId!);
-      ids.addAll(_encodeWord(words[i]));
+    final ids = <int>[];
+    if (addSpecialTokens) {
+      if (exaggerationId != null) ids.add(exaggerationId!);
+      ids.add(startId);
     }
 
-    if (addSpecialTokens) ids.add(stopId);
+    ids.addAll(_encodeBody(text));
+
+    if (addSpecialTokens) {
+      ids.add(stopId);
+      if (startSpeechId != null) ids.addAll([startSpeechId!, startSpeechId!]);
+    }
     return ids;
   }
 
-  /// Splits on whitespace, keeping any `[bracketed]` special token whole.
-  List<String> _preTokenize(String text) {
+  /// Everything between the template's special tokens.
+  ///
+  /// Mirrors the shipped pipeline: the normalizer replaces each literal space
+  /// with `[SPACE]`, then a Whitespace pre-tokenizer splits words from runs of
+  /// punctuation, and BPE runs over each piece. Spaces are *not* collapsed —
+  /// three spaces are three `[SPACE]` tokens.
+  List<int> _encodeBody(String text) {
     final normalized = _lowercase ? text.toLowerCase() : text;
-    final out = <String>[];
-    final pattern = RegExp(r'\[[a-zA-Z_]+\]|\S+');
-    for (final match in pattern.allMatches(normalized)) {
+    final ids = <int>[];
+
+    for (final match in _pieces.allMatches(normalized)) {
       final piece = match.group(0)!;
-      out.add(piece);
+      if (piece == ' ') {
+        if (spaceId != null) ids.add(spaceId!);
+      } else if (_vocab.containsKey(piece)) {
+        // A `[bracketed]` token that really is in the vocabulary is atomic.
+        ids.add(_vocab[piece]!);
+      } else if (piece.startsWith('[') && piece.endsWith(']')) {
+        // Brackets around something unrecognised are just punctuation.
+        ids.addAll(_encodeChunk('['));
+        ids.addAll(_encodeChunk(piece.substring(1, piece.length - 1)));
+        ids.addAll(_encodeChunk(']'));
+      } else {
+        ids.addAll(_encodeChunk(piece));
+      }
     }
-    return out;
+    return ids;
   }
 
-  /// Greedy BPE over one whitespace-delimited chunk.
-  List<int> _encodeWord(String word) {
-    // Special tokens are atomic; casing is preserved for them.
-    final special = _vocab[word] ?? _vocab[word.toUpperCase()];
-    if (word.startsWith('[') && word.endsWith(']') && special != null) {
-      return [special];
-    }
+  /// Bracketed specials, single spaces, word runs, punctuation runs. Other
+  /// whitespace matches nothing and drops out, as it does upstream.
+  static final RegExp _pieces = RegExp(r'\[[^\[\]\s]+\]| |\w+|[^\w\s]+');
 
+  /// Greedy BPE over one pre-tokenized chunk.
+  List<int> _encodeChunk(String word) {
     var symbols = word.split('');
     if (symbols.isEmpty) return const [];
 
@@ -185,6 +242,7 @@ class ChatterboxTokenizer {
   String toString() =>
       'ChatterboxTokenizer(vocab: ${_vocab.length}, merges: ${_mergeRanks.length})';
 
-  @visibleForTesting
+  /// Whether [token] — brackets included, e.g. `[fr]` — is in the vocabulary
+  /// as an atomic token.
   bool hasToken(String token) => _vocab.containsKey(token);
 }

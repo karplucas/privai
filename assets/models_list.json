@@ -79,6 +79,22 @@
       "description": "23 languages and voice cloning; slower and much larger",
       "gated": false,
       "license": "MIT"
+    },
+    {
+      "name": "Chatterbox Multilingual (GGUF)",
+      "repo": "hans00/Chatterbox-Multilingual-TTS-GGUF",
+      "engine": "chatterboxGguf",
+      "directory": "chatterbox-gguf",
+      "filename": "chatterbox-gguf",
+      "files": [
+        {
+          "file": "chatterbox-mtl-t3-q4_k_m.gguf"
+        }
+      ],
+      "size": "302MB + a codec file you must convert",
+      "description": "Same model, ~12x faster than the ONNX build. The codec GGUF is not downloadable — see native/chatterbox/README.md; the published one has no tokenizer or voice encoder.",
+      "gated": false,
+      "license": "MIT"
     }
   ],
   "stt": [

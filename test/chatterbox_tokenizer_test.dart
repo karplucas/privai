@@ -32,11 +32,60 @@ void main() {
     expect(tokenizer.startId, isNot(tokenizer.stopId));
   });
 
-  test('wraps encodings in start and stop tokens', () {
+  test('wraps encodings in the post-processor template', () {
+    // <EXAGGERATION> <s> …text… </s> <START_SPEECH> <START_SPEECH>
+    expect(tokenizer.exaggerationId, 6563);
+    expect(tokenizer.startId, 255);
+    expect(tokenizer.stopId, 0);
+    expect(tokenizer.startSpeechId, 6561);
+
     final ids = tokenizer.encode('hello');
-    expect(ids.first, tokenizer.startId);
-    expect(ids.last, tokenizer.stopId);
-    expect(ids.length, greaterThan(2));
+    expect(ids.take(2), [6563, 255]);
+    expect(ids.skip(ids.length - 3), [0, 6561, 6561]);
+  });
+
+  /// Expected ids produced by Hugging Face `tokenizers` against this same
+  /// `tokenizer.json`. The trailing `<START_SPEECH>` pair is what puts the
+  /// language model into speech generation; without it the model continues
+  /// text, never emits end-of-speech, and the audio is a drone.
+  test('matches the reference tokenizer id for id', () {
+    const expected = {
+      '[en]Okay.': [6563, 255, 708, 291, 24, 88, 9, 0, 6561, 6561],
+      'hello world': [6563, 255, 62, 84, 28, 2, 179, 79, 0, 6561, 6561],
+      'the quick brown fox': [
+        6563, 255, 42, 2, 194, 91, 24, 2, 243, 190, 2, 182, 37, 0, 6561, 6561,
+      ],
+      'Hola, ¿cómo estás?': [
+        6563, 255, 284, 28, 25, 14, 7, 2, 360, 16, 412, 115, 2, 218, 394, 32,
+        13, 0, 6561, 6561,
+      ],
+      '[laughter] hi': [6563, 255, 607, 2, 21, 22, 0, 6561, 6561],
+      'a b c 1 2 3 !?': [
+        6563, 255, 14, 2, 15, 2, 16, 2, 264, 2, 265, 2, 266, 2, 3, 13, 0, 6561,
+        6561,
+      ],
+      '日本語': [6563, 255, 1, 1, 1, 0, 6561, 6561],
+      // An unknown bracketed token is punctuation, not a special.
+      '[foo] x': [6563, 255, 303, 182, 28, 305, 2, 37, 0, 6561, 6561],
+      '': [6563, 255, 0, 6561, 6561],
+    };
+
+    expected.forEach((text, ids) {
+      expect(tokenizer.encode(text), ids, reason: 'encoding "$text"');
+    });
+  });
+
+  test('emits one space token per space, without collapsing runs', () {
+    // The normalizer replaces each literal space with [SPACE]; three spaces are
+    // three tokens, and leading and trailing spaces survive.
+    expect(
+      tokenizer.encode('hello   world', addSpecialTokens: false),
+      [62, 84, 28, 2, 2, 2, 179, 79],
+    );
+    expect(
+      tokenizer.encode(' hello ', addSpecialTokens: false),
+      [2, 62, 84, 28, 2],
+    );
   });
 
   test('omits special tokens when asked', () {
@@ -52,17 +101,6 @@ void main() {
     expect(tokenizer.spaceId, isNotNull);
     expect(two.length, one.length * 2 + 1);
     expect(two[one.length], tokenizer.spaceId);
-  });
-
-  test('collapses runs of whitespace rather than emitting empty tokens', () {
-    expect(
-      tokenizer.encode('hello   world', addSpecialTokens: false),
-      tokenizer.encode('hello world', addSpecialTokens: false),
-    );
-    expect(
-      tokenizer.encode('  hello  ', addSpecialTokens: false),
-      tokenizer.encode('hello', addSpecialTokens: false),
-    );
   });
 
   test('keeps bracketed special tokens atomic', () {
@@ -84,7 +122,10 @@ void main() {
       '',
     ];
     for (final sample in samples) {
-      for (final id in tokenizer.encode(sample)) {
+      // Only the body: the template's <EXAGGERATION> and <START_SPEECH> ids
+      // deliberately address the language model's speech range, above the
+      // text vocabulary.
+      for (final id in tokenizer.encode(sample, addSpecialTokens: false)) {
         expect(id, inInclusiveRange(0, tokenizer.vocabSize - 1),
             reason: 'id out of range for "$sample"');
       }
@@ -97,8 +138,8 @@ void main() {
     expect(ids.every((id) => id >= 0), isTrue);
   });
 
-  test('an empty string yields just the special tokens', () {
-    expect(tokenizer.encode(''), [tokenizer.startId, tokenizer.stopId]);
+  test('an empty string yields just the template', () {
+    expect(tokenizer.encode(''), [6563, 255, 0, 6561, 6561]);
   });
 
   test('preserves case, because the vocabulary is case-sensitive', () {

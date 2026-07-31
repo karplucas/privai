@@ -47,6 +47,7 @@ class _ModelsPageState extends State<ModelsPage> {
   bool _saveChatHistory = true;
 
   TtsEngineKind _ttsEngineKind = TtsEngineKind.kokoro;
+  bool _ggufUseGpu = false;
   String _ttsVoice = AppSettings.defaultTtsVoice;
   String _ttsLanguage = AppSettings.defaultTtsLanguage;
   String _sttLanguage = AppSettings.defaultSttLanguage;
@@ -98,6 +99,7 @@ class _ModelsPageState extends State<ModelsPage> {
       final saveChatHistory = await _settings.saveChatHistory;
 
       final ttsEngineKind = await _settings.ttsEngine;
+      final ggufUseGpu = await _settings.chatterboxGgufUseGpu;
       final ttsVoice = await _settings.ttsVoice;
       final ttsLanguage = await _settings.ttsLanguage;
       final sttLanguage = await _settings.sttLanguage;
@@ -124,6 +126,7 @@ class _ModelsPageState extends State<ModelsPage> {
         _sttEnabled = sttEnabled;
         _saveChatHistory = saveChatHistory;
         _ttsEngineKind = ttsEngineKind;
+        _ggufUseGpu = ggufUseGpu;
         _ttsVoice = ttsVoice;
         _ttsLanguage = ttsLanguage;
         _sttLanguage = sttLanguage;
@@ -475,12 +478,32 @@ class _ModelsPageState extends State<ModelsPage> {
       case ModelKind.tts:
         await _settings.setSelectedTtsModel(model.filename);
         if (mounted) setState(() => _selectedTts = model.filename);
+        // A TTS model is only usable by the engine it was built for, so picking
+        // one switches engines rather than leaving a selection the active
+        // engine cannot load.
+        await _adoptEngineFor(model);
       case ModelKind.stt:
         await _settings.setSelectedSttModel(model.filename);
         if (mounted) setState(() => _selectedStt = model.filename);
     }
     if (mounted) setState(() => _needsReload = true);
     if (announce && mounted) _showMessage('${model.name} selected.');
+  }
+
+  /// Switches the active speech engine to the one [model] belongs to.
+  Future<void> _adoptEngineFor(ModelSpec model) async {
+    final engine = model.engine;
+    if (engine == null) return;
+    final kind = TtsEngineKind.fromName(engine);
+    if (kind.name != engine || kind == _ttsEngineKind) return;
+
+    await _settings.setTtsEngine(kind);
+    if (!mounted) return;
+    setState(() {
+      _ttsEngineKind = kind;
+      _needsReload = true;
+    });
+    await _refreshVoices();
   }
 
   String? _selectionFor(ModelKind kind) => switch (kind) {
@@ -764,6 +787,24 @@ class _ModelsPageState extends State<ModelsPage> {
             ],
           ),
         ),
+        if (_ttsEngineKind == TtsEngineKind.chatterboxGguf)
+          SwitchListTile(
+            title: const Text('Use the GPU for speech'),
+            subtitle: const Text(
+              'Measured slower than the CPU on desktop hardware — speech is '
+              'generated one token at a time, which never fills a GPU. Worth '
+              'trying on this device.',
+            ),
+            value: _ggufUseGpu,
+            onChanged: (value) async {
+              await _settings.setChatterboxGgufUseGpu(value);
+              if (!mounted) return;
+              setState(() {
+                _ggufUseGpu = value;
+                _needsReload = true;
+              });
+            },
+          ),
         Padding(
           padding: const EdgeInsets.symmetric(horizontal: 16),
           child: Column(

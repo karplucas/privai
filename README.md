@@ -163,12 +163,27 @@ Four ONNX graphs from
 1. `embed_tokens` — `input_ids`, `position_ids`, `exaggeration` → `inputs_embeds[1,S,1024]`
 2. `language_model_q4f16` — embeds + `attention_mask` + 30 layers of KV cache →
    `logits[1,S,8194]` + `present.*`, decoded autoregressively at **25 Hz**
-3. `speech_encoder` — reference audio → `speaker_embeddings[192]`,
-   `speaker_features`; cached per voice since the graph is ~590 MB
-4. `conditional_decoder` — speech tokens + speaker tensors → 24 kHz waveform, in
-   a **single** pass
+3. `speech_encoder` — reference audio → `audio_features` (the conditioning
+   prefix, `[1,N,1024]`), `audio_tokens` (the reference's speech tokens),
+   `speaker_embeddings[192]`, `speaker_features`; cached per voice since the
+   graph is ~590 MB
+4. `conditional_decoder` — reference + generated speech tokens + speaker tensors
+   → 24 kHz waveform, in a **single** pass
 
 Things worth knowing before touching it:
+
+- **The language model is conditioned by prefix, not by an input.** Its only
+  tensors are embeddings, a mask and the cache, so `audio_features` has to be
+  concatenated in front of the text embeddings before the prefill. Run without
+  it, the model never emits end-of-speech and decodes until the token ceiling.
+- **Positions are not a running offset.** Text ids take `-1, 0, 1, …`; each
+  generated speech token takes its own index plus one, starting again at 1
+  regardless of how long the text was.
+- **Decoding is greedy** — argmax after the repetition penalty, matching the
+  reference implementation. Sampling here loses end-of-speech.
+- **Multilingual means the tag is required.** Text is prefixed with the
+  tokenizer's `[xx]` language token; the app's Kokoro-style locale codes are
+  reduced to the bare ISO code (`en-us` → `en`, `cmn` → `zh`) to find it.
 
 - **KV cache stays native.** `flutter_onnxruntime` holds `OrtValue`s by id, so
   `present.N.*` outputs are handed straight back as `past_key_values.N.*` inputs.
@@ -178,11 +193,18 @@ Things worth knowing before touching it:
   internally and ONNX Runtime resolves that relative to the graph, so bundle
   files keep their original basenames in one directory. A test enforces it.
 - **25 Hz was measured, not assumed** — 75 tokens decode to 72,000 samples at
-  24 kHz. `speaker_features` is the reference mel at 50 Hz, prepended to the
-  sequence and trimmed from the output, which is how cloning is conditioned.
+  24 kHz. `speaker_features` is the reference mel at 50 Hz; the vocoder trims
+  the reference prefix from its output, which is how cloning is conditioned.
 - **The tokenizer is case-sensitive.** Its normalizer is a Replace of `" "` with
   `[SPACE]`, *not* a Lowercase, and the vocabulary contains uppercase letters.
-  Folding case picks tokens the model was never trained on.
+  Folding case picks tokens the model was never trained on. Each space is its
+  own `[SPACE]`; runs are not collapsed.
+- **The template comes from the post-processor, not the vocabulary.** Every
+  encoding is `<EXAGGERATION> <s> …text… </s> <START_SPEECH> <START_SPEECH>`,
+  and the two outer ids (6563, 6561) are outside the 2,454-entry vocabulary —
+  they address the language model's speech range. The trailing pair is what
+  switches the model from continuing text to generating speech. A test pins
+  encodings against Hugging Face `tokenizers` id for id.
 
 `generation_config.json` supplies the sampling parameters: eos ids `{2, 6562}`
 and repetition penalty 1.2.
