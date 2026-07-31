@@ -159,7 +159,7 @@ class _ModelsPageState extends State<ModelsPage> {
     for (final model in catalog.models.where((m) => m.isBundle)) {
       final complete = await _storage.bundleIsComplete(
         model.bundleDirectory ?? model.filename,
-        model.files.map((f) => f.name).toList(),
+        model.requiredFilenames,
       );
       if (!mounted) return;
       setState(() {

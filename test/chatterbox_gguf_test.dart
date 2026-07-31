@@ -68,6 +68,24 @@ void main() {
       );
     });
 
+    test('counts the hand-supplied codec file towards completeness', () {
+      // Without this the models page reported the model ready as soon as the
+      // backbone landed, while the engine refused to load for want of the
+      // codec file — "definitely downloaded in settings", and still missing.
+      final entry = catalog
+          .byKind(ModelKind.tts)
+          .firstWhere((m) => m.engine == TtsEngineKind.chatterboxGguf.name);
+
+      expect(entry.suppliedFiles, contains(ChatterboxGgufTtsService.codecFile));
+      expect(
+        entry.requiredFilenames,
+        containsAll([
+          ChatterboxGgufTtsService.backboneFile,
+          ChatterboxGgufTtsService.codecFile,
+        ]),
+      );
+    });
+
     test('does not offer the codec file the published repo gets wrong', () {
       // The Hub copy carries no tokenizer and no voice encoder, so downloading
       // it would produce an engine that fails at first use. It has to be

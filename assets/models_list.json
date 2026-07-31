@@ -91,10 +91,13 @@
           "file": "chatterbox-mtl-t3-q4_k_m.gguf"
         }
       ],
-      "size": "302MB + a codec file you must convert",
-      "description": "Same model, ~12x faster than the ONNX build. The codec GGUF is not downloadable — see native/chatterbox/README.md; the published one has no tokenizer or voice encoder.",
+      "size": "302MB download + a 180MB codec file you supply",
+      "description": "Same model, ~12x faster than the ONNX build. The codec file must be converted and copied in by hand — the published one has no tokenizer or voice encoder. See native/chatterbox/README.md.",
       "gated": false,
-      "license": "MIT"
+      "license": "MIT",
+      "requires": [
+        "chatterbox-mtl-codec-q4_k_m.gguf"
+      ]
     }
   ],
   "stt": [
