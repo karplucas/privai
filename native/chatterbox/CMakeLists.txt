@@ -43,6 +43,45 @@ option(CHATTERBOX_METAL "Build the decode backbone with Metal (Apple)" OFF)
 # Upstream defines the codec_tts_runner library — the reference host loop this
 # shim wraps — inside its `if(CODEC_BUILD_TTS_CLI)` block, so the flag has to
 # stay on even though the CLI binary itself is of no use to us.
+# Vulkan-Hpp for the cross-compiled backbone.
+#
+# The NDK ships Vulkan's C headers but no C++ bindings, and ggml-vulkan.cpp
+# needs <vulkan/vulkan.hpp>. The version is not free to choose: Vulkan-Hpp
+# static-asserts that VK_HEADER_VERSION matches the C headers it sits on, and
+# releases after ~1.3.275 dropped API this llama.cpp still uses — streaming a
+# vk::Buffer to an ostream, for one. The host's copy is whatever the distro
+# ships (341 on this machine) and does not work.
+#
+# Fetched rather than vendored: it is 19 MB of generated headers, which has no
+# business in a Flutter app's history.
+if(CHATTERBOX_VULKAN AND NOT VULKAN_HPP_DIR)
+    set(_vkhpp_version "1.3.275")
+    set(_vkhpp_root "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan-hpp")
+
+    if(NOT EXISTS "${_vkhpp_root}/vulkan.hpp")
+        set(_vkhpp_tar "${CMAKE_BINARY_DIR}/vulkan-hpp-${_vkhpp_version}.tar.gz")
+        message(STATUS "Fetching Vulkan-Hpp ${_vkhpp_version}")
+        file(DOWNLOAD
+            "https://github.com/KhronosGroup/Vulkan-Hpp/archive/refs/tags/v${_vkhpp_version}.tar.gz"
+            "${_vkhpp_tar}" STATUS _vkhpp_status TLS_VERIFY ON)
+        list(GET _vkhpp_status 0 _vkhpp_rc)
+        if(NOT _vkhpp_rc EQUAL 0)
+            list(GET _vkhpp_status 1 _vkhpp_err)
+            message(FATAL_ERROR
+                "Could not fetch Vulkan-Hpp ${_vkhpp_version}: ${_vkhpp_err}\n"
+                "Download it by hand and point -DVULKAN_HPP_DIR at its "
+                "vulkan/ directory, or build with -DCHATTERBOX_VULKAN=OFF.")
+        endif()
+        file(ARCHIVE_EXTRACT INPUT "${_vkhpp_tar}"
+             DESTINATION "${CMAKE_BINARY_DIR}/vulkan-hpp-src")
+        file(COPY "${CMAKE_BINARY_DIR}/vulkan-hpp-src/Vulkan-Hpp-${_vkhpp_version}/vulkan"
+             DESTINATION "${CMAKE_CURRENT_SOURCE_DIR}/third_party")
+        file(RENAME "${CMAKE_CURRENT_SOURCE_DIR}/third_party/vulkan" "${_vkhpp_root}")
+    endif()
+
+    set(VULKAN_HPP_DIR "${_vkhpp_root}" CACHE PATH "Vulkan-Hpp headers" FORCE)
+endif()
+
 set(CODEC_BUILD_TTS_CLI ON  CACHE BOOL "" FORCE)
 set(CODEC_TTS_BACKBONE  ON  CACHE BOOL "" FORCE)
 set(GGML_VULKAN         OFF CACHE BOOL "" FORCE)

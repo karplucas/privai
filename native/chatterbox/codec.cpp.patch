@@ -1,5 +1,5 @@
 diff --git a/cmake/SetupTtsBackbone.cmake b/cmake/SetupTtsBackbone.cmake
-index f88f7dc..5a25076 100644
+index f88f7dc..c69887d 100644
 --- a/cmake/SetupTtsBackbone.cmake
 +++ b/cmake/SetupTtsBackbone.cmake
 @@ -1,3 +1,7 @@
@@ -10,7 +10,7 @@ index f88f7dc..5a25076 100644
  # SetupTtsBackbone.cmake — build an ISOLATED llama.cpp backbone for tts-cli.
  #
  # codec.cpp links ggml 0.9 (the standalone ggml submodule) as a shared
-@@ -18,6 +22,49 @@
+@@ -18,6 +22,99 @@
  
  include(ExternalProject)
  
@@ -38,6 +38,56 @@ index f88f7dc..5a25076 100644
 +    set(_ll_native OFF)
 +endif()
 +
++if(CODEC_BACKBONE_VULKAN AND CMAKE_CROSSCOMPILING)
++    # The NDK toolchain sets CMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY, so the
++    # nested build cannot see host packages. SPIRV-Headers is header-only and
++    # architecture-independent, so the host copy is the right one to use.
++    if(NOT SPIRV_HEADERS_DIR AND EXISTS "/usr/share/cmake/SPIRV-Headers")
++        set(SPIRV_HEADERS_DIR "/usr/share/cmake/SPIRV-Headers")
++    endif()
++    if(SPIRV_HEADERS_DIR)
++        list(APPEND _ll_cross_args
++            "-DSPIRV-Headers_DIR=${SPIRV_HEADERS_DIR}"
++            "-DCMAKE_FIND_ROOT_PATH_MODE_PACKAGE=BOTH")
++    else()
++        message(WARNING
++            "CODEC_BACKBONE_VULKAN is on but SPIRV-Headers was not found on "
++            "the host; set -DSPIRV_HEADERS_DIR=<dir containing "
++            "SPIRV-HeadersConfig.cmake>.")
++    endif()
++
++    # ggml-vulkan.cpp includes <vulkan/vulkan.hpp>, the C++ bindings, which the
++    # NDK sysroot does not ship — it has only the C headers. Vulkan-Hpp is
++    # header-only and architecture-independent, so staging a copy is enough.
++    # Adding -I/usr/include instead would shadow sysroot headers wholesale.
++    #
++    # The version MUST match the sysroot's C headers: Vulkan-Hpp static-asserts
++    # on VK_HEADER_VERSION, and its newer releases have dropped API this
++    # llama.cpp still uses (operator<< on handles, among others). The caller
++    # passes a matching copy via VULKAN_HPP_DIR; see native/chatterbox.
++    if(VULKAN_HPP_DIR)
++        set(_ll_vkhpp "${CMAKE_BINARY_DIR}/vulkan-hpp")
++        file(GLOB _vk_hpp_files "${VULKAN_HPP_DIR}/*.hpp")
++        file(COPY ${_vk_hpp_files} DESTINATION "${_ll_vkhpp}/vulkan")
++
++        # ggml-vulkan.cpp also includes <spirv/unified1/spirv.hpp> directly;
++        # find_package(SPIRV-Headers) satisfies CMake but does not put that
++        # directory on this translation unit's compile line.
++        if(SPIRV_INCLUDE_DIR AND EXISTS "${SPIRV_INCLUDE_DIR}/spirv")
++            file(COPY "${SPIRV_INCLUDE_DIR}/spirv" DESTINATION "${_ll_vkhpp}")
++        elseif(EXISTS "/usr/include/spirv/unified1/spirv.hpp")
++            file(COPY "/usr/include/spirv" DESTINATION "${_ll_vkhpp}")
++        endif()
++
++        list(APPEND _ll_cross_args "-DCMAKE_CXX_FLAGS=-I${_ll_vkhpp}")
++        message(STATUS "Staged Vulkan-Hpp from ${VULKAN_HPP_DIR}")
++    else()
++        message(WARNING
++            "CODEC_BACKBONE_VULKAN is on but VULKAN_HPP_DIR was not set; the "
++            "NDK ships no vulkan.hpp and the build will fail.")
++    endif()
++endif()
++
 +if(APPLE)
 +    # Metal ships its shaders as a .metal source located at runtime;
 +    # embedding compiles them into the archive instead, which is the only
@@ -60,7 +110,7 @@ index f88f7dc..5a25076 100644
  set(_ll_dir      "${CMAKE_CURRENT_SOURCE_DIR}/common/third-party/llama.cpp")
  set(_ll_prefix   "${CMAKE_BINARY_DIR}/llama-static")
  set(_ll_libdir   "${_ll_prefix}/src/llama-build/src")
-@@ -48,11 +95,60 @@ set(_ll_archives
+@@ -48,11 +145,60 @@ set(_ll_archives
      "${_ll_ggmldir}/libggml-cpu.a"
      "${_ll_ggmldir}/libggml-base.a")
  
@@ -121,7 +171,7 @@ index f88f7dc..5a25076 100644
          -DCMAKE_BUILD_TYPE=Release
          -DBUILD_SHARED_LIBS=OFF
          -DCMAKE_POSITION_INDEPENDENT_CODE=ON
-@@ -64,8 +160,8 @@ ExternalProject_Add(llama_static
+@@ -64,8 +210,8 @@ ExternalProject_Add(llama_static
          -DLLAMA_BUILD_COMMON=ON
          -DLLAMA_CURL=OFF
          -DLLAMA_OPENSSL=OFF
@@ -132,7 +182,7 @@ index f88f7dc..5a25076 100644
          -DGGML_BACKEND_DL=OFF
      BUILD_COMMAND   ${CMAKE_COMMAND} --build <BINARY_DIR> --target llama-common --config Release
      BUILD_BYPRODUCTS ${_ll_archives}
-@@ -85,15 +181,44 @@ set(_ll_vscript "${CMAKE_BINARY_DIR}/ttsbackbone.map")
+@@ -85,15 +231,44 @@ set(_ll_vscript "${CMAKE_BINARY_DIR}/ttsbackbone.map")
  file(WRITE "${_ll_vscript}"
  "{\n  global:\n    llama_*;\n    extern \"C++\" {\n      common_sampler*;\n    };\n  local:\n    *;\n};\n")
  

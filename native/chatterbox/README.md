@@ -15,9 +15,11 @@ accelerator:
 
 **GPU offload measured *slower*** — 24.2 s against 18.3 s for the same
 utterance on an RTX 5080. Autoregressive decode dispatches one token at a time
-and never assembles a batch wide enough to repay the dispatch. `CHATTERBOX_VULKAN`
+and never assembles a batch wide enough to repay the dispatch. The build flag
 and the in-app toggle exist so this can be re-tested on a phone, where unified
-memory removes the transfer, but do not expect a win from it.
+memory removes the transfer, but do not expect a win from it. See
+[Vulkan on Android](#vulkan-on-android) — it is off by default for a reason
+beyond performance.
 
 ## Layout
 
@@ -28,18 +30,19 @@ vendor/codec.cpp             submodule
 codec.cpp.patch              local changes to the submodule (see below)
 ```
 
-Android builds this via `android/app/build.gradle`'s `externalNativeBuild`.
-Debug builds produce arm64-v8a, armeabi-v7a and x86_64; only arm64 is worth
-shipping, since the models need more address space than a 32-bit process has,
-but the x86_64 slice is what makes the engine usable on an emulator.
+Android builds this via `android/app/build.gradle`'s `externalNativeBuild`,
+for arm64-v8a and x86_64 — the models need more address space than a 32-bit
+process has, and the x86_64 slice is what makes the engine usable on an
+emulator.
 
 ## Platform status
 
 | | builds | runs | measured |
 | --- | --- | --- | --- |
 | Linux x86_64 | yes | yes | 60 ms/token, 8 threads |
-| Android x86_64 (emulator) | yes | yes | 308 ms/token, 4 threads |
+| Android x86_64 (emulator) | yes | yes | 308 ms/token via CLI, 496 in-app at 3 threads |
 | Android arm64 | yes | untested | — |
+| Android + Vulkan | yes | **crashes on the emulator** | — |
 | iOS | **unverified** | — | — |
 
 **The iOS support has never been compiled.** It was written on a Linux machine
@@ -74,30 +77,69 @@ unified memory means no per-dispatch transfer to repay, which is exactly what
 made Vulkan a loss on a discrete GPU — but that is a hypothesis, not a
 measurement.
 
-## The submodule patches
+## Vulkan on Android
 
-`codec.cpp.patch` holds four changes. Reapply after bumping the submodule:
+It builds, and it is **off by default**, selected at build time:
 
 ```bash
-cd native/chatterbox/vendor/codec.cpp && git apply ../../codec.cpp.patch
+flutter build apk --debug -Pchatterbox.vulkan=true
 ```
 
-1. **`lm.cpp` / `parallel_heads_delay.cpp`** — accept `lm.c0_head.weight` as an
-   alias for `lm.heads_0.weight`. Only needed for GGUFs from older converters;
-   harmless otherwise.
-2. **`tts_runner.cpp`** — `n_gpu_layers` was pinned to 0 on the assumption the
-   backbone is a small semantic LM not worth offloading. For Chatterbox T3 it
-   is the entire decode loop, so it now follows the caller's `use_gpu`.
-3. **`SetupTtsBackbone.cmake`** — Vulkan for the backbone is now a separate
-   `CODEC_BACKBONE_VULKAN` option rather than hardcoded `OFF`, and when it is
-   on, `libggml-vulkan.a` joins the wrapper's archive list and `-lvulkan` its
-   link line. Without both the wrapper fails on `ggml_backend_vk_reg` and then
-   on `vkGetInstanceProcAddr`.
+Off is not caution. **ggml registers and initialises a Vulkan device when the
+library loads**, before anything asks for a GPU, so on a device whose Vulkan
+lacks an extension it wants the process dies — a Vulkan build crashes even
+with the in-app switch off. Measured on the emulator, whose GPU passthrough
+reports no fp16 and no integer dot product:
 
-Note that **enabling Vulkan on _both_ ggml instances segfaults** during tensor
-load. codec.cpp's symbol hiding stops the two from linking against each other,
-but not from each initialising its own Vulkan backend. Only the backbone may
-have it — which is the configuration that would matter anyway.
+```
+ggml_vulkan: Found 1 Vulkan devices:
+ggml_vulkan: 0 = NVIDIA GeForce RTX 5080 | uma: 0 | fp16: 0 | int dot: 0 | matrix cores: none
+llama_model_load: error loading model: vk::PhysicalDevice::createDevice: ErrorExtensionNotPresent
+Segmentation fault
+```
+
+That was the **CPU** run. Shipping Vulkan on would need `GGML_BACKEND_DL`, so
+the Vulkan backend becomes a separate object loaded only when the GPU is
+actually requested, and its absence or failure stays recoverable.
+
+Real hardware may well be fine — phone GPUs generally have the extensions the
+emulator's passthrough does not. The flag exists so that can be tested.
+
+What it took to compile at all, none of it obvious:
+
+- **Vulkan-Hpp is not in the NDK**, which ships only the C headers.
+- **The version is not free.** Vulkan-Hpp static-asserts `VK_HEADER_VERSION`
+  against the C headers it sits on (the NDK's are 275), and releases past
+  ~1.3.275 dropped API this llama.cpp uses — it streams a `vk::Buffer` to an
+  ostream in its memory logging. `CMakeLists.txt` fetches exactly 1.3.275;
+  the distro's copy (341 here) fails both ways.
+- **`spirv/unified1/spirv.hpp` is included directly**, and
+  `find_package(SPIRV-Headers)` does not put that directory on the compile
+  line for that translation unit.
+- **`SPIRV-Headers` is not findable at all** from the nested build, because the
+  NDK toolchain sets `CMAKE_FIND_ROOT_PATH_MODE_PACKAGE=ONLY`.
+- **ggml-vulkan does not compile for 32-bit.** Non-dispatchable handles are
+  `uint64_t` there, which makes Vulkan-Hpp's conversion explicit and breaks
+  that same ostream call. The build is arm64-v8a and x86_64 only, set through
+  `externalNativeBuild.cmake.abiFilters` — the `ndk` block alone does not
+  decide which ABIs CMake runs for.
+
+`vulkan-shaders-gen` needs no special handling: llama.cpp detects a host
+compiler and builds it with a generated host toolchain when cross-compiling.
+
+## NPU
+
+There is no path through this stack. llama.cpp has no NPU backend upstream —
+Qualcomm's QNN work is not merged and NNAPI was removed. The nearest
+alternative is **OpenCL**, which llama.cpp does support and which targets
+Adreno directly; it would be the same shape of work as Vulkan.
+
+Whether any of it is worth finishing is a separate question from whether it
+builds. Autoregressive decode dispatches one token at a time and never
+assembles a batch wide enough to repay a GPU round trip — an RTX 5080 lost to
+eight CPU threads by 32%. Threads are the lever that measurably works: 4.8x on
+desktop, and the in-app run at 3 threads was 496 ms/token against 308 ms/token
+for the same model at 4.
 
 ## Models
 
