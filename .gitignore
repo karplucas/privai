@@ -73,8 +73,3 @@ android/app/.cxx/
 .DS_Store
 *.log
 Thumbs.db
-# Fetched at build time by native/chatterbox/CMakeLists.txt (19MB of generated headers).
-native/chatterbox/third_party/vulkan-hpp/
-# Generated native Chatterbox iOS binaries; rebuild for the required slices.
-native/chatterbox/ios/build/
-native/chatterbox/ios/*.xcframework/

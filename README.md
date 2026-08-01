@@ -155,6 +155,9 @@ language model around a Chatterbox utterance and reloads it in a `finally`, so a
 synthesis failure cannot leave the chat unable to reply. It is also not warmed up
 at start-up, which would evict the language model before you had said anything.
 
+Chatterbox support is ONNX-only. The former GGUF/`codec.cpp` backend, its native
+patches, and its separate iOS/Android build steps have been removed.
+
 ### Chatterbox pipeline
 
 Four ONNX graphs from

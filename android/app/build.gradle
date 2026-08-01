@@ -15,12 +15,6 @@ if (localPropertiesFile.exists()) {
 def flutterVersionCode = localProperties.getProperty('flutter.versionCode') ?: '1'
 def flutterVersionName = localProperties.getProperty('flutter.versionName') ?: '1.0'
 
-// Vulkan is built in by default so the in-app GPU switch can be tested on a
-// device. Opt out with -Pchatterbox.vulkan=false; see the note in
-// defaultConfig for when that matters.
-def chatterboxVulkan = (project.findProperty('chatterbox.vulkan') ?: 'true')
-        .toString().equalsIgnoreCase('true') ? 'ON' : 'OFF'
-
 android {
     // Matches the package declared by MainActivity.kt.
     namespace "com.example.privai"
@@ -58,52 +52,8 @@ android {
         versionCode flutterVersionCode.toInteger()
         versionName flutterVersionName
 
-        externalNativeBuild {
-            cmake {
-                // c++_shared because two shared objects (libchatterbox_ffi and
-                // libttsbackbone) both need the C++ runtime; static copies
-                // would each get their own and break exception handling
-                // across the boundary.
-                // CHATTERBOX_VULKAN compiles the decode backbone's Vulkan
-                // backend, which is what makes the app's GPU switch do
-                // anything — without it that switch sets n_gpu_layers on a
-                // binary with no GPU backend and silently stays on the CPU.
-                //
-                // ON, but note that ggml creates a Vulkan device when the
-                // library loads, before anything asks for a GPU. A device
-                // that cannot be created takes the process down with it, so a
-                // driver ggml cannot satisfy crashes the app even with the
-                // in-app switch off. Opt out with:
-                //   flutter build apk -Pchatterbox.vulkan=false
-                //
-                // Making that failure survivable would need GGML_BACKEND_DL,
-                // so the Vulkan backend loads only when the GPU is requested.
-                arguments "-DANDROID_STL=c++_shared",
-                          "-DCMAKE_BUILD_TYPE=Release",
-                          "-DCHATTERBOX_VULKAN=${chatterboxVulkan}"
-                cppFlags "-O3", "-fexceptions"
-
-                // 64-bit only. The models need well over 2 GB of address
-                // space, and ggml-vulkan does not compile for 32-bit at all:
-                // Vulkan's non-dispatchable handles are uint64_t there, which
-                // makes Vulkan-Hpp's conversion explicit, and its memory
-                // logging streams a vk::Buffer straight to an ostream.
-                //
-                // This filter, not the `ndk` block below, is what decides
-                // which ABIs CMake is invoked for.
-                abiFilters 'arm64-v8a', 'x86_64'
-            }
-        }
-
         ndk {
             abiFilters 'arm64-v8a', 'x86_64'
-        }
-    }
-
-    externalNativeBuild {
-        cmake {
-            path "../../native/chatterbox/CMakeLists.txt"
-            version "3.22.1"
         }
     }
 

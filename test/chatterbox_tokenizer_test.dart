@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:privai/services/chatterbox_tokenizer.dart';
+import 'package:privai/services/chatterbox_tts_service.dart';
 
 /// Runs against the real `tokenizer.json` from
 /// onnx-community/chatterbox-multilingual-ONNX, checked in as a fixture so these
@@ -53,15 +54,65 @@ void main() {
       '[en]Okay.': [6563, 255, 708, 291, 24, 88, 9, 0, 6561, 6561],
       'hello world': [6563, 255, 62, 84, 28, 2, 179, 79, 0, 6561, 6561],
       'the quick brown fox': [
-        6563, 255, 42, 2, 194, 91, 24, 2, 243, 190, 2, 182, 37, 0, 6561, 6561,
+        6563,
+        255,
+        42,
+        2,
+        194,
+        91,
+        24,
+        2,
+        243,
+        190,
+        2,
+        182,
+        37,
+        0,
+        6561,
+        6561,
       ],
       'Hola, ¿cómo estás?': [
-        6563, 255, 284, 28, 25, 14, 7, 2, 360, 16, 412, 115, 2, 218, 394, 32,
-        13, 0, 6561, 6561,
+        6563,
+        255,
+        284,
+        28,
+        25,
+        14,
+        7,
+        2,
+        360,
+        16,
+        412,
+        115,
+        2,
+        218,
+        394,
+        32,
+        13,
+        0,
+        6561,
+        6561,
       ],
       '[laughter] hi': [6563, 255, 607, 2, 21, 22, 0, 6561, 6561],
       'a b c 1 2 3 !?': [
-        6563, 255, 14, 2, 15, 2, 16, 2, 264, 2, 265, 2, 266, 2, 3, 13, 0, 6561,
+        6563,
+        255,
+        14,
+        2,
+        15,
+        2,
+        16,
+        2,
+        264,
+        2,
+        265,
+        2,
+        266,
+        2,
+        3,
+        13,
+        0,
+        6561,
         6561,
       ],
       '日本語': [6563, 255, 1, 1, 1, 0, 6561, 6561],
@@ -157,5 +208,32 @@ void main() {
     // 265 merges exist, so a common word should compress below its length.
     final ids = tokenizer.encode('the', addSpecialTokens: false);
     expect(ids.length, lessThanOrEqualTo(3));
+  });
+
+  group('speech token budget', () {
+    test('short replies no longer generate the full thirty seconds', () {
+      expect(ChatterboxTtsService.tokenBudgetForText('Okay.'), 75);
+      expect(
+        ChatterboxTtsService.tokenBudgetForText(
+          'This is a normal short reply that should finish promptly.',
+        ),
+        lessThan(300),
+      );
+    });
+
+    test('long replies retain the absolute safety ceiling', () {
+      final longReply = List.filled(500, 'word').join(' ');
+      expect(
+        ChatterboxTtsService.tokenBudgetForText(longReply),
+        ChatterboxTtsService.maxSeconds * ChatterboxTtsService.tokenRateHz,
+      );
+    });
+
+    test('text without spaces still receives a useful budget', () {
+      expect(
+        ChatterboxTtsService.tokenBudgetForText('這是一段沒有空格但需要語音合成的文字'),
+        greaterThan(75),
+      );
+    });
   });
 }

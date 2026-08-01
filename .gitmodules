@@ -1,3 +1,0 @@
-[submodule "native/chatterbox/vendor/codec.cpp"]
-	path = native/chatterbox/vendor/codec.cpp
-	url = https://github.com/mybigday/codec.cpp

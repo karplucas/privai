@@ -44,6 +44,12 @@
 	<true/>
 	<key>NSMicrophoneUsageDescription</key>
 	<string>This app needs microphone access for speech-to-text functionality.</string>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Allow Flutter debugging tools to connect to this app on your local network.</string>
+	<key>NSBonjourServices</key>
+	<array>
+		<string>_dartVmService._tcp</string>
+	</array>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

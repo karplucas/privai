@@ -1,10 +1,12 @@
 import 'package:flutter/foundation.dart';
 
+import '../models/model_spec.dart';
 import 'app_settings.dart';
-import 'chatterbox_gguf_tts_service.dart';
 import 'chatterbox_tts_service.dart';
 import 'kokoro_tts_service.dart';
 import 'llm_service.dart';
+import 'model_catalog.dart';
+import 'model_storage.dart';
 import 'tts_engine.dart';
 
 /// Chooses the active speech-synthesis engine and speaks through it.
@@ -21,16 +23,76 @@ class TtsRouter {
 
   final AppSettings _settings = AppSettings();
   final LlmService _llm = LlmService();
+  final ModelStorage _storage = ModelStorage();
 
   TtsEngine engineFor(TtsEngineKind kind) => switch (kind) {
         TtsEngineKind.kokoro => KokoroTtsService(),
         TtsEngineKind.chatterbox => ChatterboxTtsService(),
-        TtsEngineKind.chatterboxGguf => ChatterboxGgufTtsService(),
       };
 
   /// The engine the user has selected.
-  Future<TtsEngine> activeEngine() async =>
-      engineFor(await _settings.ttsEngine);
+  Future<TtsEngine> activeEngine() async => engineFor(await _activeKind());
+
+  /// A TTS model and its engine are one choice, not two independent settings.
+  /// Older builds allowed the engine radio group to drift away from the model
+  /// selection, so an installed ONNX model could accidentally invoke GGUF.
+  /// Prefer the selected catalog model and repair the stale engine setting.
+  Future<TtsEngineKind> _activeKind() async {
+    final configured = await _settings.ttsEngine;
+    final selected = await _settings.selectedTtsModel;
+
+    try {
+      final catalog = await ModelCatalog().load();
+      final ttsModels = catalog.byKind(ModelKind.tts);
+      ModelSpec? chosen;
+
+      if (selected != null) {
+        final matches = ttsModels.where((m) => m.filename == selected);
+        if (matches.isNotEmpty && await _isInstalled(matches.first)) {
+          chosen = matches.first;
+        }
+      }
+
+      if (chosen == null) {
+        for (final model in ttsModels) {
+          if (await _isInstalled(model)) {
+            chosen = model;
+            break;
+          }
+        }
+      }
+      if (chosen == null) return configured;
+
+      final engineName = chosen.engine;
+      final selectedKind = TtsEngineKind.fromName(engineName);
+      if (engineName == null || selectedKind.name != engineName) {
+        return configured;
+      }
+
+      if (selectedKind != configured) {
+        debugPrint('TtsRouter: correcting stale engine ${configured.name} to '
+            '${selectedKind.name} for installed model ${chosen.filename}');
+        await _settings.setTtsEngine(selectedKind);
+      }
+      if (selected != chosen.filename) {
+        await _settings.setSelectedTtsModel(chosen.filename);
+      }
+      return selectedKind;
+    } catch (e) {
+      debugPrint('TtsRouter: could not reconcile selected TTS model: $e');
+      return configured;
+    }
+  }
+
+  Future<bool> _isInstalled(ModelSpec model) {
+    if (model.isBundle) {
+      return _storage.bundleIsComplete(
+        model.bundleDirectory ?? model.filename,
+        model.requiredFilenames,
+      );
+    }
+    return _storage.isDownloaded(model.filename);
+  }
 
   /// Prepares the configured engine, if it can be prepared without disturbing
   /// the language model.
@@ -38,7 +100,7 @@ class TtsRouter {
   /// Memory-exclusive engines are deliberately *not* warmed up: loading them at
   /// start-up would evict the language model before the user has said anything.
   Future<void> warmUp() async {
-    final kind = await _settings.ttsEngine;
+    final kind = await _activeKind();
     if (kind.requiresExclusiveMemory) {
       debugPrint('TtsRouter: deferring ${kind.name} until first use');
       return;
@@ -50,7 +112,7 @@ class TtsRouter {
   ///
   /// Returns false when synthesis was not possible, having already logged why.
   Future<bool> speak(String text) async {
-    final kind = await _settings.ttsEngine;
+    final kind = await _activeKind();
     final engine = engineFor(kind);
 
     if (!kind.requiresExclusiveMemory) {
@@ -98,7 +160,7 @@ class TtsRouter {
   /// Reloads the configured engine after a settings change, and releases the
   /// other so it is not holding memory it no longer needs.
   Future<void> applySettingsChange() async {
-    final kind = await _settings.ttsEngine;
+    final kind = await _activeKind();
     for (final other in TtsEngineKind.values) {
       if (other == kind) continue;
       await engineFor(other).dispose();

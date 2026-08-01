@@ -6,18 +6,7 @@ enum TtsEngineKind {
   /// Chatterbox Multilingual: ~1.5 GB across several ONNX graphs, 23 languages
   /// and voice cloning, but roughly an order of magnitude slower and heavy
   /// enough that the language model has to be unloaded while it runs.
-  chatterbox,
-
-  /// The same Chatterbox model through llama.cpp + codec.cpp instead of ONNX
-  /// Runtime.
-  ///
-  /// Measured on a desktop CPU against the ONNX pipeline: 60 ms per speech
-  /// token at eight threads, where ONNX Runtime's CPU provider manages nothing
-  /// close. The win is threading and a 4-bit GGUF, not an accelerator —
-  /// offloading the decode loop to a GPU measured *slower*, because
-  /// autoregressive decode dispatches one token at a time and never builds a
-  /// batch wide enough to pay for the round trip.
-  chatterboxGguf;
+  chatterbox;
 
   static TtsEngineKind fromName(String? name) {
     for (final kind in TtsEngineKind.values) {
@@ -29,7 +18,6 @@ enum TtsEngineKind {
   String get label => switch (this) {
         TtsEngineKind.kokoro => 'Kokoro 82M',
         TtsEngineKind.chatterbox => 'Chatterbox Multilingual (ONNX)',
-        TtsEngineKind.chatterboxGguf => 'Chatterbox Multilingual (GGUF)',
       };
 
   String get description => switch (this) {
@@ -37,14 +25,10 @@ enum TtsEngineKind {
           '326 MB • near-realtime • English and a few other locales',
         TtsEngineKind.chatterbox =>
           '1.5 GB • slower • 23 languages, voice cloning',
-        TtsEngineKind.chatterboxGguf =>
-          '480 MB • ~12x faster than the ONNX build • 23 languages, '
-              'voice cloning',
       };
 
   /// Whether this engine needs the language model unloaded to fit in memory.
-  bool get requiresExclusiveMemory =>
-      this == TtsEngineKind.chatterbox || this == TtsEngineKind.chatterboxGguf;
+  bool get requiresExclusiveMemory => this == TtsEngineKind.chatterbox;
 }
 
 /// Common surface every speech-synthesis backend exposes.

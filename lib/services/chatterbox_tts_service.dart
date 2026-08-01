@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
@@ -90,9 +91,27 @@ class ChatterboxTtsService implements TtsEngine {
   static const Set<int> _eosTokens = {2, 6562};
   static const double _repetitionPenalty = 1.2;
 
-  /// Hard ceiling on generated audio, so a degenerate sample cannot spin
-  /// forever on a phone.
+  /// Absolute ceiling on generated audio, so a degenerate sample cannot spin
+  /// forever on a phone. Normal utterances use the much smaller, text-derived
+  /// budget from [tokenBudgetForText].
   static const int maxSeconds = 30;
+
+  /// A conservative speech-token budget based on the amount of text to speak.
+  ///
+  /// Chatterbox normally emits EOS itself, but some prompts miss it and used to
+  /// run all the way to the fixed 750-token/30-second ceiling. At roughly 2.3
+  /// spoken words per second, plus a short allowance for pauses, this leaves
+  /// enough room for natural delivery without generating a long irrelevant
+  /// tail. Character units cover languages that do not separate every word
+  /// with spaces.
+  static int tokenBudgetForText(String text) {
+    final words = RegExp(r'\S+').allMatches(text.trim()).length;
+    final characterUnits = (text.runes.length / (words <= 1 ? 2 : 6)).ceil();
+    final speechUnits = max(words, characterUnits);
+    final estimatedSeconds = (1.5 + speechUnits / 2.3).ceil();
+    final seconds = min(max(estimatedSeconds, 3), maxSeconds);
+    return seconds * tokenRateHz;
+  }
 
   final AppSettings _settings = AppSettings();
   final ModelStorage _storage = ModelStorage();
@@ -146,20 +165,35 @@ class ChatterboxTtsService implements TtsEngine {
       // recorded inside it, resolved next to the graph — which is why the
       // bundle keeps them in one directory under their original names.
       final ort = OnnxRuntime();
-      final options = await _sessionOptions(ort);
+      await _availableProviders(ort);
+      final cpuOptions = _cpuSessionOptions();
 
-      // Only the language model gets the tuned providers. It is the one graph
-      // in a per-token loop, so it is where the whole of the win is, and the
-      // others have been seen to miscompute under XNNPACK — the speech encoder
-      // failed reshaping a {1} tensor to the S3 tokenizer's {1,150} prompt.
-      _language =
-          await _createSession(ort, '${dir.path}/$languageGraph', options);
+      // Keep every graph on CPU. Core ML can accept these dynamic graphs at
+      // session creation and then fail or stall during execution, which leaves
+      // the app with no waveform. This is slower, but it is the provider path
+      // known to produce correct Chatterbox tensors on both iOS and Android.
+      _language = await _createSession(
+        ort,
+        '${dir.path}/$languageGraph',
+        cpuOptions,
+        requestedProvider: 'CPU',
+      );
       _embed = await ort.createSession('${dir.path}/$embedGraph');
-      _decoder = await ort.createSession('${dir.path}/$decoderGraph');
+      _decoder = await _createSession(
+        ort,
+        '${dir.path}/$decoderGraph',
+        cpuOptions,
+        requestedProvider: 'CPU',
+      );
 
       final encoderPath = '${dir.path}/$speechEncoderGraph';
       if (await File(encoderPath).exists()) {
-        _speechEncoder = await ort.createSession(encoderPath);
+        _speechEncoder = await _createSession(
+          ort,
+          encoderPath,
+          cpuOptions,
+          requestedProvider: 'CPU',
+        );
       } else {
         debugPrint('ChatterboxTtsService: no speech encoder; cloning disabled');
       }
@@ -177,7 +211,20 @@ class ChatterboxTtsService implements TtsEngine {
     }
   }
 
-  /// Execution providers and thread count for the language model.
+  /// Providers compiled into this ONNX Runtime build.
+  Future<Set<OrtProvider>> _availableProviders(OnnxRuntime ort) async {
+    try {
+      final available = (await ort.getAvailableProviders()).toSet();
+      debugPrint('ChatterboxTtsService: providers available: '
+          '${available.map((p) => p.name).join(', ')}');
+      return available;
+    } catch (e) {
+      debugPrint('ChatterboxTtsService: could not list providers: $e');
+      return const {};
+    }
+  }
+
+  /// CPU settings for the autoregressive language model.
   ///
   /// The CPU provider, parallelised across the cores. The two alternatives this
   /// runtime reports were both tried and are worse here:
@@ -191,39 +238,21 @@ class ChatterboxTtsService implements TtsEngine {
   /// * **NNAPI** partitions a dynamically shaped, heavily quantised graph like
   ///   this one badly, and the round trip through the driver costs more than
   ///   it saves.
-  /// * **CORE_ML** on iOS/macOS: compiling this per-token autoregressive
-  ///   graph with dynamic shapes has been seen to freeze the app while the
-  ///   EP does its ahead-of-time compile/warm-up — a native-side hang, not
-  ///   something catchable from Dart. Listed ahead of CPU so `createSession`
-  ///   uses it when available; if the freeze recurs, drop the `if` below
-  ///   rather than removing CORE_ML from the enum usage.
-  Future<OrtSessionOptions> _sessionOptions(OnnxRuntime ort) async {
-    try {
-      final available = await ort.getAvailableProviders();
-      debugPrint('ChatterboxTtsService: providers available: '
-          '${available.map((p) => p.name).join(', ')}');
-    } catch (e) {
-      debugPrint('ChatterboxTtsService: could not list providers: $e');
-    }
-
-    return OrtSessionOptions(
-      providers: [
-        if (Platform.isIOS || Platform.isMacOS) OrtProvider.CORE_ML,
-        OrtProvider.CPU,
-      ],
-      intraOpNumThreads: Platform.numberOfProcessors,
-    );
-  }
+  OrtSessionOptions _cpuSessionOptions() => OrtSessionOptions(
+        providers: const [OrtProvider.CPU],
+        intraOpNumThreads: Platform.numberOfProcessors,
+      );
 
   /// Creates a session with [options], falling back to the runtime's defaults
   /// if the requested providers are not usable for this graph.
   Future<OrtSession> _createSession(
-    OnnxRuntime ort,
-    String path,
-    OrtSessionOptions options,
-  ) async {
+      OnnxRuntime ort, String path, OrtSessionOptions options,
+      {required String requestedProvider}) async {
     try {
-      return await ort.createSession(path, options: options);
+      final session = await ort.createSession(path, options: options);
+      debugPrint('ChatterboxTtsService: ${path.split('/').last} created with '
+          '$requestedProvider requested');
+      return session;
     } catch (e) {
       debugPrint('ChatterboxTtsService: ${path.split('/').last} would not load '
           'with the requested providers ($e); using the defaults');
@@ -298,7 +327,11 @@ class ChatterboxTtsService implements TtsEngine {
     final speaker = await _conditioning(referenceWavPath);
     final tag = await _languageTag(lang);
     final ids = tokenizer.encode(tag == null ? text : '[$tag]$text');
-    final speechTokens = await _generateSpeechTokens(ids, speaker);
+    final speechTokens = await _generateSpeechTokens(
+      ids,
+      speaker,
+      maxTokens: tokenBudgetForText(text),
+    );
 
     if (speechTokens.isEmpty) {
       debugPrint('ChatterboxTtsService: model produced no speech tokens');
@@ -326,11 +359,11 @@ class ChatterboxTtsService implements TtsEngine {
 
   Future<List<int>> _generateSpeechTokens(
     List<int> textIds,
-    _SpeakerConditioning speaker,
-  ) async {
+    _SpeakerConditioning speaker, {
+    required int maxTokens,
+  }) async {
     final embed = _embed!;
     final language = _language!;
-    const maxTokens = maxSeconds * tokenRateHz;
     final started = DateTime.now();
 
     // Positions are `arange(len) - 1`, except that the prompt's own speech
@@ -351,9 +384,10 @@ class ChatterboxTtsService implements TtsEngine {
     // generates against. Without it the model is running unconditioned, which
     // is what made it babble until the token ceiling instead of emitting
     // end-of-speech.
-    final prefill = Float32List(speaker.condEmbeddings.length + textEmbeds.length)
-      ..setAll(0, speaker.condEmbeddings)
-      ..setAll(speaker.condEmbeddings.length, textEmbeds);
+    final prefill =
+        Float32List(speaker.condEmbeddings.length + textEmbeds.length)
+          ..setAll(0, speaker.condEmbeddings)
+          ..setAll(speaker.condEmbeddings.length, textEmbeds);
     final prefillLength = speaker.condFrames + textIds.length;
 
     var past = await _emptyCache();

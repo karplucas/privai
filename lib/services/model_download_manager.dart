@@ -1,4 +1,7 @@
 import 'dart:async';
+import 'dart:io';
+
+import 'package:http/http.dart' as http;
 
 import '../models/model_spec.dart';
 import '../ui/widgets/model_tile.dart' show ModelTileState;
@@ -102,6 +105,14 @@ class ModelDownloadManager {
           access: e.access,
         ),
       );
+    } on http.ClientException {
+      _reportInterrupted(model);
+    } on SocketException {
+      _reportInterrupted(model);
+    } on HttpException {
+      _reportInterrupted(model);
+    } on TimeoutException {
+      _reportInterrupted(model);
     } catch (e) {
       _update(
         model,
@@ -109,6 +120,24 @@ class ModelDownloadManager {
         (s) => s.copyWith(clearProgress: true, clearToken: true, error: '$e'),
       );
     }
+  }
+
+  /// A phone going to sleep can suspend its socket while the HTTP response is
+  /// still streaming. That is an expected, recoverable interruption: the bytes
+  /// already written remain in the `.partial` file and the next tap resumes.
+  /// Do not expose package:http's ClientException (and its very long signed
+  /// CDN URL) to the user.
+  void _reportInterrupted(ModelSpec model) {
+    _update(
+      model,
+      ModelDownloadStatus.failed,
+      (s) => s.copyWith(
+        clearProgress: true,
+        clearToken: true,
+        error: 'Download paused when the connection was interrupted. '
+            'Tap Download to resume where it left off.',
+      ),
+    );
   }
 
   /// Cancels [filename]'s download, if one is running. The partial file is

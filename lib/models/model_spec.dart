@@ -74,7 +74,6 @@ class ModelSpec {
     this.engine,
     List<ModelFile>? files,
     this.bundleDirectory,
-    this.suppliedFiles = const [],
   }) : _files = files;
 
   final ModelKind kind;
@@ -124,15 +123,6 @@ class ModelSpec {
   /// beside their graphs and away from other models.
   final String? bundleDirectory;
 
-  /// Files the model cannot run without but which the app does not fetch.
-  ///
-  /// The Chatterbox GGUF codec file is the case this exists for: the copy
-  /// published on the Hub is missing its tokenizer and voice encoder, so it has
-  /// to be converted and copied in by hand. Counting these towards
-  /// completeness keeps the models page from reporting a model as ready when
-  /// the engine will refuse to load it.
-  final List<String> suppliedFiles;
-
   final List<ModelFile>? _files;
 
   /// Every file that has to be present for the model to be usable.
@@ -141,16 +131,12 @@ class ModelSpec {
   List<ModelFile> get files =>
       _files ?? [ModelFile(pathInRepo: repoFile, name: filename)];
 
-  /// Every file that has to be on disk before the model can be used, whether
-  /// this app downloads it or the user supplies it.
-  List<String> get requiredFilenames =>
-      [...files.map((f) => f.name), ...suppliedFiles];
+  /// Every file that has to be on disk before the model can be used.
+  List<String> get requiredFilenames => files.map((f) => f.name).toList();
 
   /// Whether this model's files live together in [bundleDirectory].
   ///
-  /// An explicit directory is enough on its own: an entry can name one file to
-  /// download and still need it beside a second the user supplies themselves,
-  /// and that file has to land in the directory the engine reads.
+  /// An explicit directory is enough on its own.
   bool get isBundle => bundleDirectory != null || (_files?.length ?? 0) > 1;
 
   /// Download URL for [file].
@@ -175,8 +161,7 @@ class ModelSpec {
   Uri get downloadUrl {
     if (isBundle) return urlFor(files.first);
     return Uri.parse(
-      urlOverride ??
-          'https://huggingface.co/$repo/resolve/$revision/$repoFile',
+      urlOverride ?? 'https://huggingface.co/$repo/resolve/$revision/$repoFile',
     );
   }
 
@@ -206,10 +191,6 @@ class ModelSpec {
       homepage: json['homepage'] as String?,
       engine: json['engine'] as String?,
       bundleDirectory: json['directory'] as String?,
-      suppliedFiles: (json['requires'] as List?)
-              ?.whereType<String>()
-              .toList() ??
-          const [],
       files: (json['files'] as List?)?.map(ModelFile.fromJson).toList(),
     );
   }

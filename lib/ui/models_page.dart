@@ -51,7 +51,6 @@ class _ModelsPageState extends State<ModelsPage> {
   bool _saveChatHistory = true;
 
   TtsEngineKind _ttsEngineKind = TtsEngineKind.kokoro;
-  bool _ggufUseGpu = false;
   String _ttsVoice = AppSettings.defaultTtsVoice;
   String _ttsLanguage = AppSettings.defaultTtsLanguage;
   String _sttLanguage = AppSettings.defaultSttLanguage;
@@ -172,7 +171,6 @@ class _ModelsPageState extends State<ModelsPage> {
       final saveChatHistory = await _settings.saveChatHistory;
 
       final ttsEngineKind = await _settings.ttsEngine;
-      final ggufUseGpu = await _settings.chatterboxGgufUseGpu;
       final ttsVoice = await _settings.ttsVoice;
       final ttsLanguage = await _settings.ttsLanguage;
       final sttLanguage = await _settings.sttLanguage;
@@ -199,7 +197,6 @@ class _ModelsPageState extends State<ModelsPage> {
         _sttEnabled = sttEnabled;
         _saveChatHistory = saveChatHistory;
         _ttsEngineKind = ttsEngineKind;
-        _ggufUseGpu = ggufUseGpu;
         _ttsVoice = ttsVoice;
         _ttsLanguage = ttsLanguage;
         _sttLanguage = sttLanguage;
@@ -318,7 +315,8 @@ class _ModelsPageState extends State<ModelsPage> {
       _signedIn = true;
       _hfAccount = account;
     });
-    _showMessage('Signed in to Hugging Face${account == null ? '' : ' as $account'}.');
+    _showMessage(
+        'Signed in to Hugging Face${account == null ? '' : ' as $account'}.');
     await _refreshGatedAccess();
   }
 
@@ -590,7 +588,8 @@ class _ModelsPageState extends State<ModelsPage> {
       padding: const EdgeInsets.fromLTRB(16, 8, 16, 40),
       children: [
         _huggingFaceSection(),
-        for (final kind in ModelKind.values) _modelSection(kind, catalog.byKind(kind)),
+        for (final kind in ModelKind.values)
+          _modelSection(kind, catalog.byKind(kind)),
         _llmSection(),
         _voiceTogglesSection(),
         _ttsSection(catalog),
@@ -824,13 +823,16 @@ class _ModelsPageState extends State<ModelsPage> {
           groupValue: _ttsEngineKind,
           onChanged: (value) async {
             if (value == null) return;
-            await _settings.setTtsEngine(value);
-            if (!mounted) return;
-            setState(() {
-              _ttsEngineKind = value;
-              _needsReload = true;
-            });
-            await _refreshVoices();
+            final matches = catalog
+                .byKind(ModelKind.tts)
+                .where((model) => model.engine == value.name);
+            if (matches.isEmpty) return;
+            final model = matches.first;
+            if (!_downloadedFilenames.contains(model.filename)) {
+              _showMessage('Download ${model.name} before selecting it.');
+              return;
+            }
+            await _select(model);
           },
           child: Column(
             children: [
@@ -852,32 +854,15 @@ class _ModelsPageState extends State<ModelsPage> {
             ],
           ),
         ),
-        if (_ttsEngineKind == TtsEngineKind.chatterboxGguf)
-          SwitchListTile(
-            title: const Text('Use the GPU for speech'),
-            subtitle: const Text(
-              'Faster on some devices and slower on others: speech is '
-              'generated one token at a time, which never fills a GPU. Worth '
-              'timing both ways on this device.',
-            ),
-            value: _ggufUseGpu,
-            onChanged: (value) async {
-              await _settings.setChatterboxGgufUseGpu(value);
-              if (!mounted) return;
-              setState(() {
-                _ggufUseGpu = value;
-                _needsReload = true;
-              });
-            },
-          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: Column(
             children: [
               DropdownButtonFormField<String>(
-                initialValue: catalog.ttsLanguages.any((l) => l.code == _ttsLanguage)
-                    ? _ttsLanguage
-                    : null,
+                initialValue:
+                    catalog.ttsLanguages.any((l) => l.code == _ttsLanguage)
+                        ? _ttsLanguage
+                        : null,
                 decoration: const InputDecoration(labelText: 'Language'),
                 items: [
                   for (final language in catalog.ttsLanguages)
@@ -954,9 +939,10 @@ class _ModelsPageState extends State<ModelsPage> {
         SizedBox(
           width: double.infinity,
           child: DropdownButtonFormField<String>(
-            initialValue: catalog.sttLanguages.any((l) => l.code == _sttLanguage)
-                ? _sttLanguage
-                : null,
+            initialValue:
+                catalog.sttLanguages.any((l) => l.code == _sttLanguage)
+                    ? _sttLanguage
+                    : null,
             decoration: const InputDecoration(labelText: 'Language'),
             items: [
               for (final language in catalog.sttLanguages)

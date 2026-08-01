@@ -174,7 +174,8 @@ abstract final class AppTheme {
         hintStyle: TextStyle(color: muted),
         labelStyle: TextStyle(color: muted),
         helperStyle: TextStyle(color: muted, fontSize: 12),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        contentPadding:
+            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(16),
           borderSide: BorderSide(color: hairline),
@@ -317,7 +318,8 @@ class AppGradients extends ThemeExtension<AppGradients> {
 
 /// The gradient badge that stands in for the assistant throughout the app.
 class SparkAvatar extends StatelessWidget {
-  const SparkAvatar({super.key, this.size = 34, this.icon = Icons.auto_awesome});
+  const SparkAvatar(
+      {super.key, this.size = 34, this.icon = Icons.auto_awesome});
 
   final double size;
   final IconData icon;
@@ -385,7 +387,9 @@ class GradientIconButton extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onPressed,
-            child: Icon(icon, size: size * 0.48, color: Colors.white),
+            child: Center(
+              child: Icon(icon, size: size * 0.48, color: Colors.white),
+            ),
           ),
         ),
       ),

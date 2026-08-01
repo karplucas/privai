@@ -25,6 +25,7 @@ class ChatScreen extends StatefulWidget {
 class ChatScreenState extends State<ChatScreen> {
   final List<Map<String, String>> _messages = [];
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _composerFocusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
 
   final AppSettings _settings = AppSettings();
@@ -78,6 +79,7 @@ class ChatScreenState extends State<ChatScreen> {
   @override
   void dispose() {
     _textController.dispose();
+    _composerFocusNode.dispose();
     _scrollController.dispose();
     // The services are process-wide singletons shared with the settings screen,
     // so they are deliberately not disposed here — the previous version tore
@@ -277,7 +279,8 @@ class ChatScreenState extends State<ChatScreen> {
       // Keep whatever streamed successfully and append the explanation.
       final partial = buffer.toString().trimRight();
       setState(() {
-        replyMessage['text'] = partial.isEmpty ? message : '$partial\n\n$message';
+        replyMessage['text'] =
+            partial.isEmpty ? message : '$partial\n\n$message';
       });
     }
 
@@ -300,7 +303,17 @@ class ChatScreenState extends State<ChatScreen> {
       // Spoken once the full reply is known; synthesising per token would
       // produce disjointed audio. The router picks the configured engine and,
       // for Chatterbox, frees the language model while it runs.
-      await _tts.speak(reply);
+      await _speak(reply);
+    }
+  }
+
+  Future<void> _speak(String text) async {
+    final spoken = await _tts.speak(text);
+    if (!spoken) {
+      _showMessage(
+        'Could not generate audio with the selected speech engine. '
+        'Check the model files and try again.',
+      );
     }
   }
 
@@ -459,12 +472,10 @@ class ChatScreenState extends State<ChatScreen> {
             Expanded(child: _buildMessageList()),
             if (_isTranscribing) _buildStatusLine('Transcribing…'),
             if (_isStreaming) _buildStopButton(),
+            _buildComposer(),
           ],
         ),
       ),
-      // Kept out of `body` so the default SnackBar (which floats above
-      // bottomNavigationBar) doesn't render on top of the input field.
-      bottomNavigationBar: SafeArea(top: false, child: _buildComposer()),
     );
   }
 
@@ -537,7 +548,8 @@ class ChatScreenState extends State<ChatScreen> {
         decoration: BoxDecoration(
           color: theme.colorScheme.errorContainer,
           borderRadius: BorderRadius.circular(18),
-          border: Border.all(color: theme.colorScheme.error.withValues(alpha: 0.35)),
+          border: Border.all(
+              color: theme.colorScheme.error.withValues(alpha: 0.35)),
         ),
         child: Row(
           children: [
@@ -730,7 +742,7 @@ class ChatScreenState extends State<ChatScreen> {
         }),
         const SizedBox(width: 4),
         if (_ttsEnabled)
-          action(Icons.volume_up_outlined, 'Read aloud', () => _tts.speak(text)),
+          action(Icons.volume_up_outlined, 'Read aloud', () => _speak(text)),
       ],
     );
   }
@@ -765,61 +777,68 @@ class ChatScreenState extends State<ChatScreen> {
     final gradients = AppGradients.of(context);
     final busy = _isProcessing || _isTranscribing;
 
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-      child: Container(
-        padding: const EdgeInsets.fromLTRB(18, 4, 4, 4),
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(28),
-          border: Border.all(color: gradients.hairline),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.end,
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _textController,
-                enabled: !busy,
-                textInputAction: TextInputAction.send,
-                onSubmitted: _sendMessage,
-                maxLines: 5,
-                minLines: 1,
-                style: theme.textTheme.bodyMedium,
-                decoration: InputDecoration(
-                  isDense: true,
-                  filled: false,
-                  border: InputBorder.none,
-                  enabledBorder: InputBorder.none,
-                  focusedBorder: InputBorder.none,
-                  disabledBorder: InputBorder.none,
-                  contentPadding: const EdgeInsets.symmetric(vertical: 14),
-                  hintText: 'Send message…',
-                  hintStyle: theme.textTheme.bodyMedium
-                      ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+        child: Container(
+          padding: const EdgeInsets.fromLTRB(18, 4, 4, 4),
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            borderRadius: BorderRadius.circular(28),
+            border: Border.all(color: gradients.hairline),
+          ),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            children: [
+              Expanded(
+                child: TextField(
+                  controller: _textController,
+                  focusNode: _composerFocusNode,
+                  enabled: !busy,
+                  keyboardType: TextInputType.text,
+                  textInputAction: TextInputAction.send,
+                  onSubmitted: _sendMessage,
+                  maxLines: 5,
+                  minLines: 1,
+                  scrollPadding: const EdgeInsets.only(bottom: 24),
+                  style: theme.textTheme.bodyMedium,
+                  decoration: InputDecoration(
+                    isDense: true,
+                    filled: false,
+                    border: InputBorder.none,
+                    enabledBorder: InputBorder.none,
+                    focusedBorder: InputBorder.none,
+                    disabledBorder: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                    hintText: 'Send message…',
+                    hintStyle: theme.textTheme.bodyMedium
+                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                  ),
                 ),
               ),
-            ),
-            if (_sttEnabled)
-              IconButton(
-                tooltip: _isRecording ? 'Stop recording' : 'Record',
-                icon: Icon(
-                  _isRecording ? Icons.stop : Icons.mic,
-                  size: 22,
-                  color: _isRecording
-                      ? theme.colorScheme.error
-                      : theme.colorScheme.onSurfaceVariant,
+              if (_sttEnabled)
+                IconButton(
+                  tooltip: _isRecording ? 'Stop recording' : 'Record',
+                  icon: Icon(
+                    _isRecording ? Icons.stop : Icons.mic,
+                    size: 22,
+                    color: _isRecording
+                        ? theme.colorScheme.error
+                        : theme.colorScheme.onSurfaceVariant,
+                  ),
+                  onPressed: _isTranscribing ? null : _toggleRecording,
                 ),
-                onPressed: _isTranscribing ? null : _toggleRecording,
+              GradientIconButton(
+                icon: Icons.send,
+                tooltip: 'Send',
+                size: 42,
+                glow: true,
+                onPressed:
+                    busy ? null : () => _sendMessage(_textController.text),
               ),
-            GradientIconButton(
-              icon: Icons.send,
-              tooltip: 'Send',
-              size: 42,
-              glow: true,
-              onPressed: busy ? null : () => _sendMessage(_textController.text),
-            ),
-          ],
+            ],
+          ),
         ),
       ),
     );
@@ -930,8 +949,8 @@ class ChatScreenState extends State<ChatScreen> {
           const SizedBox(height: 4),
           Text(
             'Every model runs offline, on this phone.',
-            style: theme.textTheme.bodySmall
-                ?.copyWith(color: theme.colorScheme.onSurface.withValues(alpha: 0.75)),
+            style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurface.withValues(alpha: 0.75)),
           ),
         ],
       ),
@@ -982,8 +1001,7 @@ class ChatScreenState extends State<ChatScreen> {
             final isCurrent = _currentConversation?.id == conversation.id;
 
             return ListTile(
-              contentPadding:
-                  const EdgeInsets.only(left: 12, right: 4),
+              contentPadding: const EdgeInsets.only(left: 12, right: 4),
               leading: SparkAvatar(
                 size: 30,
                 icon: isCurrent ? Icons.auto_awesome : Icons.history,
@@ -1069,7 +1087,8 @@ class _CircleIconButton extends StatelessWidget {
       message: tooltip,
       child: Material(
         color: theme.colorScheme.surfaceContainerHighest,
-        shape: CircleBorder(side: BorderSide(color: AppGradients.of(context).hairline)),
+        shape: CircleBorder(
+            side: BorderSide(color: AppGradients.of(context).hairline)),
         clipBehavior: Clip.antiAlias,
         child: InkWell(
           onTap: onPressed,
