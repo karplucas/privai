@@ -1,6 +1,7 @@
 PODS:
   - audioplayers_darwin (0.0.1):
     - Flutter
+  - ChatterboxNative (0.1.0)
   - Flutter (1.0.0)
   - flutter_gemma_mediapipe (1.0.4):
     - Flutter
@@ -28,6 +29,7 @@ PODS:
 
 DEPENDENCIES:
   - audioplayers_darwin (from `.symlinks/plugins/audioplayers_darwin/ios`)
+  - ChatterboxNative (from `../native/chatterbox/ios`)
   - Flutter (from `Flutter`)
   - flutter_gemma_mediapipe (from `.symlinks/plugins/flutter_gemma_mediapipe/ios`)
   - flutter_onnxruntime (from `.symlinks/plugins/flutter_onnxruntime/ios`)
@@ -46,6 +48,8 @@ SPEC REPOS:
 EXTERNAL SOURCES:
   audioplayers_darwin:
     :path: ".symlinks/plugins/audioplayers_darwin/ios"
+  ChatterboxNative:
+    :path: "../native/chatterbox/ios"
   Flutter:
     :path: Flutter
   flutter_gemma_mediapipe:
@@ -63,6 +67,7 @@ EXTERNAL SOURCES:
 
 SPEC CHECKSUMS:
   audioplayers_darwin: ccf9c770ee768abb07e26d90af093f7bab1c12ab
+  ChatterboxNative: 9f0311ede57723c77dda31f6060cad548c5e678f
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   flutter_gemma_mediapipe: 9f914ffd91280c77be1026cd6ced94dc8647d4f5
   flutter_onnxruntime: 744f037980e9fb685736bfeceaf4c2dd8c381f8a
@@ -75,6 +80,6 @@ SPEC CHECKSUMS:
   permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
   whisper_ggml: e49d353bd4736293ca18f7a1e90accec56d9b57d
 
-PODFILE CHECKSUM: 2f6dc805d86175a59b4b85579ae5664e78d80492
+PODFILE CHECKSUM: 2ee6c07f86e0f48e0e0a2fadc28123f4b3f207c5
 
 COCOAPODS: 1.17.0

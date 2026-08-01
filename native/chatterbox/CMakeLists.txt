@@ -128,17 +128,28 @@ target_include_directories(chatterbox_ffi PRIVATE
 # target that can only be depended on, never linked. Its own TTS_BACKBONE_SO
 # variable is subdirectory-scoped and reads as empty here, so the path is
 # reconstructed rather than borrowed.
-set(TTS_BACKBONE_SO "${CMAKE_BINARY_DIR}/ttsbackbone/libttsbackbone.so")
+if(APPLE)
+    set(TTS_BACKBONE_SO "${CMAKE_BINARY_DIR}/ttsbackbone/libttsbackbone.dylib")
+else()
+    set(TTS_BACKBONE_SO "${CMAKE_BINARY_DIR}/ttsbackbone/libttsbackbone.so")
+endif()
 target_link_libraries(chatterbox_ffi PRIVATE
-    -Wl,--whole-archive
-    codec_tts_runner
-    -Wl,--no-whole-archive
+    $<$<PLATFORM_ID:Darwin,iOS>:codec_tts_runner>
+    $<$<PLATFORM_ID:Darwin,iOS>:-Wl,-force_load,$<TARGET_FILE:codec_tts_runner>>
+    $<$<NOT:$<PLATFORM_ID:Darwin,iOS>>:-Wl,--whole-archive>
+    $<$<NOT:$<PLATFORM_ID:Darwin,iOS>>:codec_tts_runner>
+    $<$<NOT:$<PLATFORM_ID:Darwin,iOS>>:-Wl,--no-whole-archive>
     codec_common
     codec-example-utils
     codec
     "${TTS_BACKBONE_SO}")
 
-add_dependencies(chatterbox_ffi ttsbackbone)
+add_dependencies(chatterbox_ffi
+    ttsbackbone
+    codec_tts_runner
+    codec_common
+    codec-example-utils
+    codec)
 
 # The backbone is emitted by a custom command into its own directory, so the
 # Android Gradle plugin never sees it and leaves it out of the APK — where it
@@ -162,3 +173,9 @@ set_target_properties(chatterbox_ffi PROPERTIES
     OUTPUT_NAME "chatterbox_ffi"
     # The Dart side opens it by this exact soname.
     PREFIX "lib")
+
+if(APPLE)
+    set_target_properties(chatterbox_ffi PROPERTIES
+        BUILD_RPATH "@loader_path"
+        INSTALL_RPATH "@loader_path")
+endif()
