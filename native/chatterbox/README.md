@@ -27,13 +27,37 @@ beyond performance.
 src/chatterbox_ffi.{h,cpp}   C boundary over codec_common::tts_runner_synthesize
 CMakeLists.txt               builds codec.cpp + the isolated backbone + the shim
 vendor/codec.cpp             submodule
-codec.cpp.patch              local changes to the submodule (see below)
+patches/codec.cpp.patch      local codec.cpp changes
+patches/llama.cpp-vulkan.patch  Vulkan fix for codec.cpp's nested llama.cpp
 ```
 
 Android builds this via `android/app/build.gradle`'s `externalNativeBuild`,
 for arm64-v8a and x86_64 — the models need more address space than a 32-bit
 process has, and the x86_64 slice is what makes the engine usable on an
 emulator.
+
+## Applying the vendor patches
+
+The repository pins `codec.cpp` as a submodule, so the Chatterbox integration
+is stored as patches rather than committed inside `vendor/codec.cpp`. From the
+repository root, initialize all submodules and apply both patches:
+
+```bash
+git submodule update --init --recursive
+git -C native/chatterbox/vendor/codec.cpp \
+    apply --check ../../patches/codec.cpp.patch
+git -C native/chatterbox/vendor/codec.cpp \
+    apply ../../patches/codec.cpp.patch
+git -C native/chatterbox/vendor/codec.cpp/common/third-party/llama.cpp \
+    apply --check ../../../../../patches/llama.cpp-vulkan.patch
+git -C native/chatterbox/vendor/codec.cpp/common/third-party/llama.cpp \
+    apply ../../../../../patches/llama.cpp-vulkan.patch
+```
+
+The `--check` commands make the process fail before modifying a submodule if a
+patch no longer matches its pinned revision. A second application is expected
+to fail because the changes are already present. To confirm that situation,
+use `git apply --reverse --check` with the same path.
 
 ## Platform status
 
@@ -103,7 +127,7 @@ to core in Vulkan 1.1, so a 1.1+ driver may support the feature without
 advertising the extension string — and asking for an unadvertised extension
 fails `createDevice` with `ErrorExtensionNotPresent`. ggml already detects the
 real extension into `fp16_storage`; the fix is to use it.
-See `llama.cpp-vulkan.patch`, which applies to the nested llama.cpp submodule
+See `patches/llama.cpp-vulkan.patch`, which applies to the nested llama.cpp submodule
 (not codec.cpp — a separate patch for a separate repository).
 
 Until that was found, a Vulkan build died at *library load*, before anything

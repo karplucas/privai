@@ -40,7 +40,7 @@ fi
 # than applied, so this never silently rewrites a tree you are editing.
 if ! grep -q "CODEC_BACKBONE_METAL" "$ROOT/vendor/codec.cpp/cmake/SetupTtsBackbone.cmake"; then
     echo "codec.cpp is missing its patches. Run:" >&2
-    echo "  (cd $ROOT/vendor/codec.cpp && git apply ../../codec.cpp.patch)" >&2
+    echo "  (cd $ROOT/vendor/codec.cpp && git apply ../../patches/codec.cpp.patch)" >&2
     exit 1
 fi
 

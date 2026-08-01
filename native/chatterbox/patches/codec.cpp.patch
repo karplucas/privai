@@ -233,12 +233,6 @@ index f88f7dc..c69887d 100644
      COMMENT "Linking isolated llama backbone → libttsbackbone.so (ggml_* hidden)"
      VERBATIM)
  add_custom_target(ttsbackbone DEPENDS "${TTS_BACKBONE_SO}")
-diff --git a/common/third-party/llama.cpp b/common/third-party/llama.cpp
---- a/common/third-party/llama.cpp
-+++ b/common/third-party/llama.cpp
-@@ -1 +1 @@
--Subproject commit f708a5b2caaee0226c0af220e366785699ba41e2
-+Subproject commit f708a5b2caaee0226c0af220e366785699ba41e2-dirty
 diff --git a/common/tts_runner.cpp b/common/tts_runner.cpp
 index f702e70..d30adcc 100644
 --- a/common/tts_runner.cpp
