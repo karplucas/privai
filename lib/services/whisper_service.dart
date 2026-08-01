@@ -122,13 +122,24 @@ class WhisperService {
     }
 
     debugPrint('WhisperService: transcribing $audioPath');
-    final result = await _whisperController.transcribe(
-      model: model,
-      audioPath: audioPath,
-      lang: language ?? await _settings.sttLanguage,
+    // Calling Whisper directly rather than going through
+    // WhisperController.transcribe(), which catches every internal
+    // exception and returns null — collapsing a real failure (bad model
+    // file, native error, ffmpeg conversion failure, etc.) into the same
+    // outcome as whisper genuinely hearing silence, with the actual reason
+    // only ever reaching debugPrint.
+    final modelPath = await _whisperController.getPath(model);
+    final response = await Whisper(model: model).transcribe(
+      transcribeRequest: TranscribeRequest(
+        audio: audioPath,
+        language: language ?? await _settings.sttLanguage,
+        isNoTimestamps: true,
+        isRealtime: true,
+      ),
+      modelPath: modelPath,
     );
 
-    return result?.transcription.text.trim() ?? '';
+    return response.text.trim();
   }
 
   /// Starts recording 16 kHz mono WAV, the format whisper.cpp consumes

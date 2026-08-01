@@ -1,0 +1,85 @@
+# Uncomment this line to define a global platform for your project
+platform :ios, '16.0'
+
+# CocoaPods analytics sends network stats synchronously affecting flutter build latency.
+ENV['COCOAPODS_DISABLE_STATS'] = 'true'
+
+project 'Runner', {
+  'Debug' => :debug,
+  'Profile' => :release,
+  'Release' => :release,
+}
+
+def flutter_root
+  generated_xcode_build_settings_path = File.expand_path(File.join('..', 'Flutter', 'Generated.xcconfig'), __FILE__)
+  unless File.exist?(generated_xcode_build_settings_path)
+    raise "#{generated_xcode_build_settings_path} must exist. If you're running pod install manually, make sure flutter pub get is executed first"
+  end
+
+  File.foreach(generated_xcode_build_settings_path) do |line|
+    matches = line.match(/FLUTTER_ROOT\=(.*)/)
+    return matches[1].strip if matches
+  end
+  raise "FLUTTER_ROOT not found in #{generated_xcode_build_settings_path}. Try deleting Generated.xcconfig, then run flutter pub get"
+end
+
+require File.expand_path(File.join('packages', 'flutter_tools', 'bin', 'podhelper'), flutter_root)
+
+flutter_ios_podfile_setup
+
+target 'Runner' do
+  use_frameworks! :linkage => :static
+
+  flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
+  target 'RunnerTests' do
+    inherit! :search_paths
+  end
+end
+
+post_install do |installer|
+  installer.pods_project.targets.each do |target|
+    flutter_additional_ios_build_settings(target)
+    target.build_configurations.each do |config|
+      config.build_settings['IPHONEOS_DEPLOYMENT_TARGET'] = '16.0'
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] ||= ['$(inherited)']
+      config.build_settings['GCC_PREPROCESSOR_DEFINITIONS'] << 'PERMISSION_MICROPHONE=1'
+    end
+  end
+end
+
+# whisper_ggml's Dart FFI binding finds its native `request` symbol via
+# DynamicLibrary.process() (dlsym/RTLD_DEFAULT) rather than a direct
+# Objective-C/Swift call, so the static linker treats it as dead code and
+# drops it under `use_frameworks! :linkage => :static` (needed above for
+# flutter_gemma_mediapipe's static-only xcframeworks).
+#
+# Force-loading the whole archive (-force_load) is too broad a fix: it also
+# pulls in a stray `main()` bundled from whisper.cpp's example/CLI sources,
+# which then collides with the app's own `main`. `-u _request` instead just
+# tells the linker that symbol must be resolved, which keeps only the
+# object file defining it — the archive still needs to be linked normally
+# (via -framework) for the linker to have somewhere to find it.
+#
+# This has to run in post_integrate!, not post_install: CocoaPods rewrites
+# the aggregate target's xcconfig files during its own later "integrate"
+# step, which overwrites any edits made to the in-memory xcconfig objects
+# during post_install. post_integrate! runs after that, so it patches the
+# files actually left on disk.
+post_integrate do |installer|
+  keep_symbol_flag = '-Wl,-u,_request'
+  pods_dir = File.expand_path('Pods', __dir__)
+  ['debug', 'release', 'profile'].each do |config|
+    path = File.join(pods_dir, 'Target Support Files', 'Pods-Runner', "Pods-Runner.#{config}.xcconfig")
+    next unless File.exist?(path)
+    contents = File.read(path)
+    # Undo prior attempts (a wrong-path or whole-archive -force_load, and
+    # the -framework removal that went with it) before reapplying cleanly.
+    contents = contents.gsub(/ -force_load "[^"]*whisper_ggml[^"]*"/, '')
+    contents = contents.gsub(/ -Wl,-u,_request/, '')
+    unless contents.include?(' -framework "whisper_ggml"')
+      contents = contents.sub(/^OTHER_LDFLAGS = .*$/) { |line| "#{line} -framework \"whisper_ggml\"" }
+    end
+    updated = contents.sub(/^OTHER_LDFLAGS = .*$/) { |line| "#{line} #{keep_symbol_flag}" }
+    File.write(path, updated)
+  end
+end

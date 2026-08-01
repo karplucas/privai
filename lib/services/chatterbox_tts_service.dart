@@ -191,6 +191,12 @@ class ChatterboxTtsService implements TtsEngine {
   /// * **NNAPI** partitions a dynamically shaped, heavily quantised graph like
   ///   this one badly, and the round trip through the driver costs more than
   ///   it saves.
+  /// * **CORE_ML** on iOS/macOS: compiling this per-token autoregressive
+  ///   graph with dynamic shapes has been seen to freeze the app while the
+  ///   EP does its ahead-of-time compile/warm-up — a native-side hang, not
+  ///   something catchable from Dart. Listed ahead of CPU so `createSession`
+  ///   uses it when available; if the freeze recurs, drop the `if` below
+  ///   rather than removing CORE_ML from the enum usage.
   Future<OrtSessionOptions> _sessionOptions(OnnxRuntime ort) async {
     try {
       final available = await ort.getAvailableProviders();
@@ -201,7 +207,10 @@ class ChatterboxTtsService implements TtsEngine {
     }
 
     return OrtSessionOptions(
-      providers: const [OrtProvider.CPU],
+      providers: [
+        if (Platform.isIOS || Platform.isMacOS) OrtProvider.CORE_ML,
+        OrtProvider.CPU,
+      ],
       intraOpNumThreads: Platform.numberOfProcessors,
     );
   }

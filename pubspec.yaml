@@ -30,7 +30,7 @@ dependencies:
   # Chatterbox runs its ONNX graphs directly; also a transitive dep of
   # kokoro_tts_flutter, declared here because we import it.
   flutter_onnxruntime: ^1.6.1
-  whisper_ggml: ^1.7.0
+  whisper_ggml: ^2.4.0
   path_provider: ^2.1.1
   audioplayers: ^5.2.1
   record: ^6.0.0
@@ -54,6 +54,14 @@ dev_dependencies:
     sdk: flutter
   flutter_lints: ^4.0.0
   rename: ^3.1.0
+
+# whisper_ggml ^2.4.0 above still constrains this to ^2.1.0, so plain
+# `pub upgrade` cannot reach the 3.x line. Its usage of the package
+# (FFmpegKit.execute, FFmpegSession, ReturnCode in whisper_audio_convert.dart)
+# is untouched between 2.1.0 and 3.6.2 per the package changelog, so the
+# override is safe.
+dependency_overrides:
+  ffmpeg_kit_flutter_new_min: ^3.6.2
 
 flutter:
   uses-material-design: true

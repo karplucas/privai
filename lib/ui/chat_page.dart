@@ -327,7 +327,15 @@ class ChatScreenState extends State<ChatScreen> {
         if (!mounted) return;
         setState(() => _isTranscribing = false);
         if (transcription.isEmpty) {
-          _showMessage('Could not make out any speech.');
+          // 16 kHz, 16-bit, mono PCM: 32000 bytes/sec, minus the 44-byte
+          // WAV header. Surfaced so a genuinely empty recording (mic issue)
+          // is distinguishable from whisper failing on real audio.
+          final bytes = await File(audioPath).length();
+          final seconds = (bytes - 44) / 32000;
+          _showMessage(
+            'Could not make out any speech. '
+            '(recorded ${seconds.toStringAsFixed(1)}s, $bytes bytes)',
+          );
         } else {
           await _sendMessage(transcription);
         }
@@ -443,6 +451,7 @@ class ChatScreenState extends State<ChatScreen> {
       drawer: _buildDrawer(),
       body: SafeArea(
         top: false,
+        bottom: false,
         child: Column(
           children: [
             if (_isModelLoading) const LinearProgressIndicator(minHeight: 2),
@@ -450,10 +459,12 @@ class ChatScreenState extends State<ChatScreen> {
             Expanded(child: _buildMessageList()),
             if (_isTranscribing) _buildStatusLine('Transcribing…'),
             if (_isStreaming) _buildStopButton(),
-            _buildComposer(),
           ],
         ),
       ),
+      // Kept out of `body` so the default SnackBar (which floats above
+      // bottomNavigationBar) doesn't render on top of the input field.
+      bottomNavigationBar: SafeArea(top: false, child: _buildComposer()),
     );
   }
 

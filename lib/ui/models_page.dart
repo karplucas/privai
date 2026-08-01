@@ -1,9 +1,12 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../models/model_spec.dart';
 import '../services/app_settings.dart';
 import '../services/huggingface_service.dart';
 import '../services/model_catalog.dart';
+import '../services/model_download_manager.dart';
 import '../services/model_storage.dart';
 import '../services/tts_engine.dart';
 import '../services/tts_router.dart';
@@ -57,23 +60,92 @@ class _ModelsPageState extends State<ModelsPage> {
   /// Set when a change requires the chat screen to reload a service.
   bool _needsReload = false;
 
+  StreamSubscription<ModelDownloadEvent>? _downloadSub;
+
   @override
   void initState() {
     super.initState();
+    _downloadSub = ModelDownloadManager().events.listen(_handleDownloadEvent);
     _load();
   }
 
   @override
   void dispose() {
-    // Cancel any download still running so it does not write into a dead state.
-    for (final state in _modelStates.values) {
-      state.cancellationToken?.cancel();
-    }
+    // Downloads are owned by ModelDownloadManager, not this page, so leaving
+    // (even via a swipe-back) no longer cancels a transfer in progress —
+    // only unsubscribes this page from its progress events.
+    _downloadSub?.cancel();
     _promptController.dispose();
     _temperatureController.dispose();
     _maxTokensController.dispose();
     _ttsSpeedController.dispose();
     super.dispose();
+  }
+
+  /// Reacts to a download's state change, whichever tile it belongs to.
+  ///
+  /// The manager already persisted anything durable (the `.partial` file, the
+  /// auto-select on completion); everything here is this page's own view of
+  /// that state, so it is skipped once the page is gone.
+  void _handleDownloadEvent(ModelDownloadEvent event) {
+    if (!mounted) return;
+
+    final filename = event.model.filename;
+    setState(() {
+      final current = _modelStates[filename] ?? const ModelTileState();
+      _modelStates[filename] = current.copyWith(
+        downloaded: event.status == ModelDownloadStatus.completed
+            ? true
+            : current.downloaded,
+        progress: event.state.progress,
+        cancellationToken: event.state.cancellationToken,
+        error: event.state.error,
+        clearProgress: event.state.progress == null,
+        clearToken: event.state.cancellationToken == null,
+        clearError: event.state.error == null,
+      );
+      if (event.status == ModelDownloadStatus.completed) {
+        _downloadedFilenames.add(filename);
+      }
+    });
+
+    switch (event.status) {
+      case ModelDownloadStatus.progress:
+        break;
+      case ModelDownloadStatus.completed:
+        // The manager already persisted the selection (and, for TTS, the
+        // engine switch); mirror both into this page's own fields so the
+        // tile's "selected" state and the engine radio group update too.
+        setState(() {
+          _needsReload = true;
+          switch (event.model.kind) {
+            case ModelKind.llm:
+              _selectedLlm = filename;
+            case ModelKind.tts:
+              _selectedTts = filename;
+              final engineName = event.model.engine;
+              if (engineName != null) {
+                final kind = TtsEngineKind.fromName(engineName);
+                if (kind.name == engineName) _ttsEngineKind = kind;
+              }
+            case ModelKind.stt:
+              _selectedStt = filename;
+          }
+        });
+        if (event.model.kind == ModelKind.tts) _refreshVoices();
+        _showMessage('${event.model.name} downloaded and selected.');
+      case ModelDownloadStatus.cancelled:
+        _showMessage('Download cancelled. Progress is kept for resuming.');
+      case ModelDownloadStatus.failed:
+        final access = event.state.access;
+        if (access?.status == HfAccessStatus.licenseRequired) {
+          _openLicenseGate(event.model);
+        } else if (access?.status == HfAccessStatus.authenticationRequired) {
+          _signIn();
+        } else {
+          _showMessage(event.state.error ?? 'Download failed.');
+        }
+    }
   }
 
   /// Loads settings and the catalog in a defined order.
@@ -136,9 +208,12 @@ class _ModelsPageState extends State<ModelsPage> {
         _loading = false;
 
         for (final model in catalog.models) {
-          _modelStates[model.filename] = ModelTileState(
-            downloaded: downloaded.contains(model.filename),
-          );
+          // Picks up a download already in flight (or a leftover error) from
+          // the manager, so reopening this page mid-transfer shows it rather
+          // than resetting to a blank tile.
+          _modelStates[model.filename] = ModelDownloadManager()
+              .stateFor(model.filename)
+              .copyWith(downloaded: downloaded.contains(model.filename));
         }
       });
 
@@ -165,7 +240,9 @@ class _ModelsPageState extends State<ModelsPage> {
       if (!mounted) return;
       setState(() {
         if (complete) _downloadedFilenames.add(model.filename);
-        _modelStates[model.filename] = ModelTileState(downloaded: complete);
+        _modelStates[model.filename] = ModelDownloadManager()
+            .stateFor(model.filename)
+            .copyWith(downloaded: complete);
       });
     }
   }
@@ -361,71 +438,11 @@ class _ModelsPageState extends State<ModelsPage> {
   // Downloads
   // --------------------------------------------------------------------------
 
-  Future<void> _download(ModelSpec model) async {
-    final token = CancellationToken();
-    _updateState(
-      model.filename,
-      (s) => s.copyWith(
-        cancellationToken: token,
-        progress: const DownloadProgress(received: 0, total: null),
-        clearError: true,
-      ),
-    );
-
-    try {
-      await _hf.downloadModel(
-        model,
-        cancellationToken: token,
-        onProgress: (progress) => _updateState(
-          model.filename,
-          (s) => s.copyWith(progress: progress),
-        ),
-      );
-
-      if (!mounted) return;
-      setState(() {
-        _downloadedFilenames.add(model.filename);
-        _modelStates[model.filename] = const ModelTileState(downloaded: true);
-      });
-
-      // A freshly downloaded model is almost always the one you want to use.
-      await _select(model, announce: false);
-      if (model.kind == ModelKind.tts) await _refreshVoices();
-      if (!mounted) return;
-      _showMessage('${model.name} downloaded and selected.');
-    } on DownloadCancelled {
-      if (!mounted) return;
-      _updateState(
-        model.filename,
-        (s) => s.copyWith(clearProgress: true, clearToken: true),
-      );
-      _showMessage('Download cancelled. Progress is kept for resuming.');
-    } on HfDownloadException catch (e) {
-      if (!mounted) return;
-      _updateState(
-        model.filename,
-        (s) => s.copyWith(
-          clearProgress: true,
-          clearToken: true,
-          error: e.message,
-          access: e.access,
-        ),
-      );
-      if (e.access?.status == HfAccessStatus.licenseRequired) {
-        await _openLicenseGate(model);
-      } else if (e.access?.status == HfAccessStatus.authenticationRequired) {
-        await _signIn();
-      } else {
-        _showMessage(e.message);
-      }
-    } catch (e) {
-      if (!mounted) return;
-      _updateState(
-        model.filename,
-        (s) => s.copyWith(clearProgress: true, clearToken: true, error: '$e'),
-      );
-      _showMessage('Download failed: $e');
-    }
+  /// Kicks off the download and returns immediately — [ModelDownloadManager]
+  /// runs it independently of this page, and [_handleDownloadEvent] reflects
+  /// its progress here for as long as the page stays open.
+  void _download(ModelSpec model) {
+    ModelDownloadManager().download(model);
   }
 
   Future<void> _delete(ModelSpec model) async {
@@ -451,6 +468,7 @@ class _ModelsPageState extends State<ModelsPage> {
     );
     if (confirmed != true) return;
 
+    ModelDownloadManager().forget(model.filename);
     if (model.isBundle) {
       await _storage.deleteBundle(model.bundleDirectory ?? model.filename);
     } else {
@@ -527,9 +545,16 @@ class _ModelsPageState extends State<ModelsPage> {
   @override
   Widget build(BuildContext context) {
     return PopScope(
-      canPop: true,
+      // A swipe-back or hardware/gesture back pops through this callback too,
+      // not just the AppBar's back button below. With `canPop: true` that
+      // system-driven pop used to complete `Navigator.push<bool>` with `null`
+      // instead of `_needsReload`, so `_openSettings` silently skipped the
+      // model reload — a model picked with "Use this" then swiped away from
+      // stayed unloaded until the app was restarted.
+      canPop: false,
       onPopInvokedWithResult: (didPop, _) {
-        // Nothing to do; the result is read by the caller through the route.
+        if (didPop) return;
+        Navigator.pop(context, _needsReload);
       },
       child: Scaffold(
         appBar: AppBar(
@@ -677,9 +702,7 @@ class _ModelsPageState extends State<ModelsPage> {
             isSelected: _selectionFor(kind) == model.filename,
             signedIn: _signedIn,
             onDownload: () => _download(model),
-            onCancel: () {
-              _modelStates[model.filename]?.cancellationToken?.cancel();
-            },
+            onCancel: () => ModelDownloadManager().cancel(model.filename),
             onDelete: () => _delete(model),
             onSelect: () => _select(model),
             onReviewLicense: () => _openLicenseGate(model),
