@@ -7,15 +7,18 @@ import 'kokoro_tts_service.dart';
 import 'llm_service.dart';
 import 'model_catalog.dart';
 import 'model_storage.dart';
+import 'omnivoice_tts_service.dart';
+import 'speech_chunker.dart';
 import 'tts_engine.dart';
 
 /// Chooses the active speech-synthesis engine and speaks through it.
 ///
 /// Callers ask for speech without knowing which backend is configured. The one
-/// wrinkle this hides is memory: Chatterbox holds well over a gigabyte of ONNX
-/// sessions, which will not co-reside with a multi-gigabyte language model on a
-/// phone. For engines that declare [TtsEngineKind.requiresExclusiveMemory] the
-/// language model is unloaded for the duration and reloaded afterwards.
+/// wrinkle this hides is memory: Chatterbox's Q4 weights, caches, and
+/// intermediate tensors will not reliably co-reside with a multi-gigabyte
+/// language model on a phone. For engines that declare
+/// [TtsEngineKind.requiresExclusiveMemory] the language model is unloaded for
+/// the duration and reloaded afterwards.
 class TtsRouter {
   static final TtsRouter _instance = TtsRouter._internal();
   factory TtsRouter() => _instance;
@@ -28,10 +31,23 @@ class TtsRouter {
   TtsEngine engineFor(TtsEngineKind kind) => switch (kind) {
         TtsEngineKind.kokoro => KokoroTtsService(),
         TtsEngineKind.chatterbox => ChatterboxTtsService(),
+        TtsEngineKind.omnivoice => OmniVoiceTtsService(),
       };
 
   /// The engine the user has selected.
   Future<TtsEngine> activeEngine() async => engineFor(await _activeKind());
+
+  /// Starts a sentence queue for one streamed LLM response.
+  Future<TtsResponseQueue> responseQueue() async {
+    final kind = await _activeKind();
+    return TtsResponseQueue._(
+      this,
+      kind,
+      speakWhileGenerating: kind == TtsEngineKind.kokoro,
+      pipelineSynthesis: kind == TtsEngineKind.kokoro,
+      sentenceChunking: kind == TtsEngineKind.kokoro,
+    );
+  }
 
   /// A TTS model and its engine are one choice, not two independent settings.
   /// Older builds allowed the engine radio group to drift away from the model
@@ -101,11 +117,17 @@ class TtsRouter {
   /// start-up would evict the language model before the user has said anything.
   Future<void> warmUp() async {
     final kind = await _activeKind();
-    if (kind.requiresExclusiveMemory) {
+    final keepLoaded = kind == TtsEngineKind.chatterbox &&
+        await _settings.keepChatterboxLoaded;
+    if (kind.requiresExclusiveMemory && !keepLoaded) {
       debugPrint('TtsRouter: deferring ${kind.name} until first use');
       return;
     }
-    await engineFor(kind).initialize();
+    final engine = engineFor(kind);
+    await engine.initialize();
+    if (kind == TtsEngineKind.kokoro) {
+      await KokoroTtsService().prewarm();
+    }
   }
 
   /// Speaks [text] through the configured engine.
@@ -119,6 +141,24 @@ class TtsRouter {
       return _attempt(engine, text);
     }
 
+    if (kind == TtsEngineKind.chatterbox &&
+        await _settings.keepChatterboxLoaded) {
+      final spoken = await _attempt(engine, text);
+      if (spoken) return true;
+
+      // A provider/session allocation failure can be recoverable after freeing
+      // Gemma. Native out-of-memory termination itself cannot be caught, which
+      // is why this remains an explicit opt-in setting.
+      debugPrint('TtsRouter: simultaneous mode failed; retrying exclusively');
+      await engine.dispose();
+    }
+
+    return _speakExclusively(engine, text);
+  }
+
+  Future<bool> _speakExclusively(TtsEngine engine, String text) async {
+    final kind = engine.kind;
+
     // Free the language model, speak, then bring it back. The reload is in a
     // finally so a synthesis failure cannot leave the chat unable to reply.
     final hadModel = _llm.isReady;
@@ -129,7 +169,56 @@ class TtsRouter {
     try {
       return await _attempt(engine, text);
     } finally {
-      await engine.stop();
+      // Releasing the sessions here matters: stopping playback alone leaves
+      // all Chatterbox weights resident, defeating exclusive mode when Gemma
+      // is loaded again below.
+      await engine.dispose();
+      if (hadModel) {
+        try {
+          await _llm.initializeChat(force: true);
+        } catch (e) {
+          debugPrint('TtsRouter: could not reload the language model: $e');
+        }
+      }
+    }
+  }
+
+  Future<bool> _speakBatch(TtsEngineKind kind, List<String> chunks) async {
+    if (chunks.isEmpty) return true;
+    final engine = engineFor(kind);
+    if (!kind.requiresExclusiveMemory) {
+      var okay = true;
+      for (final chunk in chunks) {
+        okay = await _attempt(engine, chunk) && okay;
+      }
+      return okay;
+    }
+
+    if (kind == TtsEngineKind.chatterbox &&
+        await _settings.keepChatterboxLoaded) {
+      var okay = true;
+      for (final chunk in chunks) {
+        okay = await _attempt(engine, chunk) && okay;
+      }
+      if (okay) return true;
+
+      // Match the single-utterance path: if co-resident allocation/inference
+      // fails, release Chatterbox before retrying with the LLM out of memory.
+      debugPrint('TtsRouter: simultaneous Chatterbox batch failed; '
+          'retrying exclusively');
+      await engine.dispose();
+    }
+
+    final hadModel = _llm.isReady;
+    if (hadModel) await _llm.unload();
+    try {
+      var okay = true;
+      for (final chunk in chunks) {
+        okay = await _attempt(engine, chunk) && okay;
+      }
+      return okay;
+    } finally {
+      await engine.dispose();
       if (hadModel) {
         try {
           await _llm.initializeChat(force: true);
@@ -161,12 +250,80 @@ class TtsRouter {
   /// other so it is not holding memory it no longer needs.
   Future<void> applySettingsChange() async {
     final kind = await _activeKind();
+    final keepLoaded = kind == TtsEngineKind.chatterbox &&
+        await _settings.keepChatterboxLoaded;
     for (final other in TtsEngineKind.values) {
       if (other == kind) continue;
       await engineFor(other).dispose();
     }
-    if (!kind.requiresExclusiveMemory) {
+    if (kind.requiresExclusiveMemory && !keepLoaded) {
+      await engineFor(kind).dispose();
+    } else {
       await engineFor(kind).reload();
+    }
+  }
+}
+
+/// Queues natural sentence chunks without delaying token rendering.
+class TtsResponseQueue {
+  TtsResponseQueue._(
+    this._router,
+    this._kind, {
+    required this.speakWhileGenerating,
+    required this.pipelineSynthesis,
+    required this.sentenceChunking,
+  });
+
+  final TtsRouter _router;
+  final TtsEngineKind _kind;
+  final bool speakWhileGenerating;
+  final bool pipelineSynthesis;
+  final bool sentenceChunking;
+  final SpeechChunker _chunker = SpeechChunker();
+  final StringBuffer _wholeResponse = StringBuffer();
+  final List<String> _buffered = [];
+  final List<Future<bool>> _pipelined = [];
+  Future<bool> _serial = Future<bool>.value(true);
+
+  void add(String fragment) {
+    if (!sentenceChunking) {
+      _wholeResponse.write(fragment);
+      return;
+    }
+    for (final chunk in _chunker.add(fragment)) {
+      _enqueue(chunk);
+    }
+  }
+
+  Future<bool> finish() async {
+    if (sentenceChunking) {
+      for (final chunk in _chunker.finish()) {
+        _enqueue(chunk);
+      }
+    } else {
+      final response = _wholeResponse.toString().trim();
+      if (response.isNotEmpty) _enqueue(response);
+    }
+    if (!speakWhileGenerating) {
+      return _router._speakBatch(_kind, _buffered);
+    }
+    if (pipelineSynthesis) {
+      final results = await Future.wait(_pipelined);
+      return results.every((result) => result);
+    }
+    return _serial;
+  }
+
+  void _enqueue(String chunk) {
+    if (!speakWhileGenerating) {
+      _buffered.add(chunk);
+    } else if (pipelineSynthesis) {
+      // Kokoro serializes ONNX inference internally but may synthesize the next
+      // chunk while its reusable player is playing the previous one.
+      _pipelined.add(_router._attempt(_router.engineFor(_kind), chunk));
+    } else {
+      _serial = _serial.then((okay) async =>
+          await _router._attempt(_router.engineFor(_kind), chunk) && okay);
     }
   }
 }

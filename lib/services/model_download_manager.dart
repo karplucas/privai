@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 
+import 'package:background_downloader/background_downloader.dart';
 import 'package:http/http.dart' as http;
 
 import '../models/model_spec.dart';
@@ -45,6 +46,11 @@ class ModelDownloadManager {
       StreamController.broadcast();
 
   Stream<ModelDownloadEvent> get events => _events.stream;
+
+  /// Activates native task tracking before the UI starts. The downloader then
+  /// resumes work after app suspension and reschedules tasks killed by the OS.
+  Future<void> initializeBackgroundDownloads() =>
+      FileDownloader().start(autoCleanDatabase: true);
 
   /// Download/error state for [filename], or an empty state if nothing is
   /// tracked for it (not downloading, no leftover error).

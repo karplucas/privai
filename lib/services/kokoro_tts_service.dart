@@ -59,6 +59,11 @@ class KokoroTtsService implements TtsEngine {
   AudioPlayer? _player;
   String? _loadedModelPath;
   Future<void>? _initialization;
+  Future<void> _synthesisTail = Future<void>.value();
+  Future<void> _playbackTail = Future<void>.value();
+  Completer<void> _stopSignal = Completer<void>();
+  int _playbackEpoch = 0;
+  bool _hasPrewarmed = false;
 
   @override
   bool get isInitialized => _kokoro != null;
@@ -105,6 +110,23 @@ class KokoroTtsService implements TtsEngine {
       debugPrint('KokoroTtsService: initialisation failed: $e');
       rethrow;
     }
+  }
+
+  /// Pays the first ONNX execution/setup cost before the user asks for speech.
+  Future<void> prewarm() async {
+    await initialize();
+    if (_hasPrewarmed) return;
+    final kokoro = _kokoro;
+    if (kokoro == null) return;
+    await kokoro.createTTS(
+      text: 'Ready.',
+      voice: await _resolveVoice(),
+      speed: await _settings.ttsSpeed,
+      lang: await _settings.ttsLanguage,
+      isPhonemes: false,
+    );
+    _hasPrewarmed = true;
+    debugPrint('KokoroTtsService: inference prewarmed');
   }
 
   /// Locates the ONNX weights.
@@ -236,6 +258,7 @@ class KokoroTtsService implements TtsEngine {
     double? speed,
   }) async {
     if (text.trim().isEmpty) return;
+    final epoch = _playbackEpoch;
 
     await initialize();
     final kokoro = _kokoro;
@@ -248,22 +271,70 @@ class KokoroTtsService implements TtsEngine {
     final resolvedSpeed =
         (speed ?? await _settings.ttsSpeed).clamp(0.5, 2.0).toDouble();
 
-    final result = await kokoro.createTTS(
-      text: text,
-      voice: resolvedVoice,
-      speed: resolvedSpeed,
-      lang: resolvedLang,
-      isPhonemes: false,
+    // ONNX inference is serialized, but it is independent of playback. This
+    // lets sentence N+1 synthesize while sentence N is already audible.
+    final previousSynthesis = _synthesisTail;
+    final synthesisDone = Completer<void>();
+    _synthesisTail = synthesisDone.future;
+    late File wavFile;
+    late double durationSeconds;
+    try {
+      await previousSynthesis;
+      final result = await kokoro.createTTS(
+        text: text,
+        voice: resolvedVoice,
+        speed: resolvedSpeed,
+        lang: resolvedLang,
+        isPhonemes: false,
+      );
+      final samples = result.audio.cast<double>();
+      durationSeconds = samples.length / 24000;
+      wavFile = await _writeWav(samples);
+    } finally {
+      synthesisDone.complete();
+    }
+
+    final previousPlayback = _playbackTail;
+    final playback = _playAfter(
+      previousPlayback,
+      wavFile,
+      durationSeconds,
+      epoch,
     );
+    _playbackTail = playback.catchError((Object _) {});
+    await playback;
+  }
 
-    final wavFile = await _writeWav(result.audio.cast<double>());
+  Future<void> _playAfter(
+    Future<void> previous,
+    File file,
+    double durationSeconds,
+    int epoch,
+  ) async {
+    try {
+      try {
+        await previous;
+      } catch (_) {
+        // A failed chunk must not strand the rest of the spoken response.
+      }
+      if (epoch != _playbackEpoch) return;
 
-    // Stop anything still playing so overlapping replies do not talk over each
-    // other and so the previous temp file's completion handler fires.
-    await stop();
-    await _player!.play(DeviceFileSource(wavFile.path));
-
-    unawaited(_deleteWhenFinished(wavFile));
+      final stopped = _stopSignal.future;
+      await _player!.play(DeviceFileSource(file.path));
+      await Future.any<void>([
+        _player!.onPlayerComplete.first,
+        stopped,
+        Future<void>.delayed(
+          Duration(milliseconds: (durationSeconds * 1000).round() + 5000),
+        ),
+      ]);
+    } finally {
+      try {
+        if (await file.exists()) await file.delete();
+      } catch (e) {
+        debugPrint('KokoroTtsService: could not delete ${file.path}: $e');
+      }
+    }
   }
 
   /// Picks a voice that the loaded model actually provides, so a stale saved
@@ -346,21 +417,11 @@ class KokoroTtsService implements TtsEngine {
     return file;
   }
 
-  Future<void> _deleteWhenFinished(File file) async {
-    try {
-      await _player?.onPlayerComplete.first;
-    } catch (_) {
-      // Playback was interrupted; the file still needs removing.
-    }
-    try {
-      if (await file.exists()) await file.delete();
-    } catch (e) {
-      debugPrint('KokoroTtsService: could not delete ${file.path}: $e');
-    }
-  }
-
   @override
   Future<void> stop() async {
+    _playbackEpoch++;
+    if (!_stopSignal.isCompleted) _stopSignal.complete();
+    _stopSignal = Completer<void>();
     try {
       await _player?.stop();
     } catch (e) {
@@ -377,6 +438,7 @@ class KokoroTtsService implements TtsEngine {
     _kokoro = null;
     _loadedModelPath = null;
     _initialization = null;
+    _hasPrewarmed = false;
     await _player?.dispose();
     _player = null;
   }

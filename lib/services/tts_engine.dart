@@ -3,10 +3,15 @@ enum TtsEngineKind {
   /// Kokoro 82M: ~326 MB, near-realtime, the default.
   kokoro,
 
-  /// Chatterbox Multilingual: ~1.5 GB across several ONNX graphs, 23 languages
-  /// and voice cloning, but roughly an order of magnitude slower and heavy
+  /// Chatterbox Nano: roughly 570 MB across four ONNX graphs, English,
+  /// performance tags, and voice cloning. Its runtime tensors are still heavy
   /// enough that the language model has to be unloaded while it runs.
-  chatterbox;
+  chatterbox,
+
+  /// OmniVoice hybrid: a multilingual masked-codebook model. Its verified FP32
+  /// backbone preserves the bidirectional attention required by diffusion.
+  /// This integration uses its built-in automatic voice, not cloning encoders.
+  omnivoice;
 
   static TtsEngineKind fromName(String? name) {
     for (final kind in TtsEngineKind.values) {
@@ -17,18 +22,22 @@ enum TtsEngineKind {
 
   String get label => switch (this) {
         TtsEngineKind.kokoro => 'Kokoro 82M',
-        TtsEngineKind.chatterbox => 'Chatterbox Multilingual (ONNX)',
+        TtsEngineKind.chatterbox => 'Chatterbox Nano (ONNX)',
+        TtsEngineKind.omnivoice => 'OmniVoice Multilingual (ONNX)',
       };
 
   String get description => switch (this) {
         TtsEngineKind.kokoro =>
-          '326 MB • near-realtime • English and a few other locales',
+          '326 MB • near-realtime • English (US/UK), Japanese, Mandarin Chinese, Spanish, Hindi, Italian, Brazilian Portuguese',
         TtsEngineKind.chatterbox =>
-          '1.5 GB • slower • 23 languages, voice cloning',
+          '570 MB • Q4F16 • English, voice cloning and performance tags',
+        TtsEngineKind.omnivoice =>
+          '2.16 GB • very slow • automatic voice • 646 languages',
       };
 
   /// Whether this engine needs the language model unloaded to fit in memory.
-  bool get requiresExclusiveMemory => this == TtsEngineKind.chatterbox;
+  bool get requiresExclusiveMemory =>
+      this == TtsEngineKind.chatterbox || this == TtsEngineKind.omnivoice;
 }
 
 /// Common surface every speech-synthesis backend exposes.

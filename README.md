@@ -138,15 +138,21 @@ unconditionally, and that method only reads `rootBundle`.
 
 ## Speech engines
 
-Two backends sit behind `TtsEngine`, selectable under **Settings & models**.
+Three backends sit behind `TtsEngine`, selectable under **Settings & models**.
 
-| | Kokoro 82M | Chatterbox Multilingual |
-| --- | --- | --- |
-| Download | 326 MB, one file | ~1.5 GB, 10 files |
-| Languages | English + a few locales | 23 |
-| Voice cloning | no | yes, from reference audio |
-| Speed | near-realtime | ~8 ms/speech-token + ~1.5 s vocoder |
-| Memory | modest | >1 GB of ONNX sessions |
+Model files download through native background transfers: `URLSession` on iOS
+and the platform download worker on Android. Transfers continue when the app is
+backgrounded or the phone locks, retry transient failures three times, and use
+the operating system's resumable temporary storage. A user force-quitting the
+app on iOS still cancels its scheduled transfers, as required by iOS.
+
+| | Kokoro 82M | Chatterbox Nano | OmniVoice Hybrid |
+| --- | --- | --- | --- |
+| Download | 326 MB, one file | 570 MB, 10 files | 2.16 GB, 9 files |
+| Languages | US/UK English, Japanese, Mandarin, Spanish, Hindi, Italian, Brazilian Portuguese | English | 646 |
+| Voice cloning | no | yes, from reference audio | not in the compact bundle |
+| Speed | near-realtime | streamlined autoregressive + one-step decoder | 12 guided refinement passes + decoder |
+| Memory | modest | >1 GB of ONNX sessions | language model is unloaded around use |
 
 Kokoro stays the default. Chatterbox is opt-in because of the second and last
 rows: it is an order of magnitude slower and its sessions will not co-reside with
@@ -158,59 +164,114 @@ at start-up, which would evict the language model before you had said anything.
 Chatterbox support is ONNX-only. The former GGUF/`codec.cpp` backend, its native
 patches, and its separate iOS/Android build steps have been removed.
 
-### Chatterbox pipeline
+OmniVoice uses the corrected FP32 bidirectional language backbone from
+[dellusional/OmniVoice-ONNX-bidirectional](https://huggingface.co/dellusional/OmniVoice-ONNX-bidirectional),
+plus the verified full-precision audio embedding/head graphs and FP16 Higgs
+decoder from [onnx-community/OmniVoice-Onnx](https://huggingface.co/onnx-community/OmniVoice-Onnx).
+The former INT4 language graph was causal: future masked positions could not
+influence earlier positions, so diffusion collapsed into repeated codec tokens
+and the decoder produced screaming or horn-like noise. The corrected backbone
+accepts OmniVoice's real four-dimensional bidirectional attention matrix.
+Only its built-in automatic voice is downloaded. Reference-voice cloning would
+require the additional acoustic, semantic, and quantizer encoders; those are
+deliberately excluded until the app has a reference-audio voice workflow.
+No small export is currently offered because the available compact graph is the
+incorrect causal export. The working FP32 model is non-commercial
+(CC-BY-NC-4.0); the Higgs decoder also carries separate Boson/Meta community
+terms.
+The refinement-step selector offers 5–32 passes and defaults to 12. Runtime is
+roughly proportional to this setting; 32 remains available when quality matters
+more than latency.
+On iOS and macOS, the expensive bidirectional backbone requests ONNX Runtime's
+Core ML execution provider with CPU fallback. Core ML may place compatible
+partitions on the GPU or Neural Engine, but its default API chooses the compute
+unit and unsupported operators remain on CPU. Android currently uses CPU.
 
-Four ONNX graphs from
-[onnx-community/chatterbox-multilingual-ONNX](https://huggingface.co/onnx-community/chatterbox-multilingual-ONNX):
+The optional **Keep Chatterbox loaded** setting avoids unloading and reloading
+Gemma around every utterance. It is off by default: enable it only with a small
+language model on a high-memory device. When it is off, the router fully closes
+the Chatterbox ONNX sessions before restoring Gemma.
 
-1. `embed_tokens` — `input_ids`, `position_ids`, `exaggeration` → `inputs_embeds[1,S,1024]`
-2. `language_model_q4f16` — embeds + `attention_mask` + 30 layers of KV cache →
-   `logits[1,S,8194]` + `present.*`, decoded autoregressively at **25 Hz**
-3. `speech_encoder` — reference audio → `audio_features` (the conditioning
-   prefix, `[1,N,1024]`), `audio_tokens` (the reference's speech tokens),
-   `speaker_embeddings[192]`, `speaker_features`; cached per voice since the
-   graph is ~590 MB
-4. `conditional_decoder` — reference + generated speech tokens + speaker tensors
-   → 24 kHz waveform, in a **single** pass
+Kokoro receives LLM output at sentence boundaries, starts speaking during
+generation, and serializes ONNX inference while pipelining the next sentence's
+synthesis with playback through one reusable audio player. It also runs one
+unplayed inference prewarm after loading. Run-on text is split at a word
+boundary after 220 characters. Chatterbox and OmniVoice synthesize one continuous
+waveform per reply. Their current ONNX decoders expose no causal streaming state;
+progressively replaying separate WAV prefixes produced audible gaps at arbitrary
+token boundaries, so that experiment was removed in favor of uninterrupted
+prosody.
 
-Things worth knowing before touching it:
+### Hands-free voice conversation
 
-- **The language model is conditioned by prefix, not by an input.** Its only
-  tensors are embeddings, a mask and the cache, so `audio_features` has to be
-  concatenated in front of the text embeddings before the prefill. Run without
-  it, the model never emits end-of-speech and decodes until the token ceiling.
-- **Positions are not a running offset.** Text ids take `-1, 0, 1, …`; each
-  generated speech token takes its own index plus one, starting again at 1
-  regardless of how long the text was.
-- **Decoding is greedy** — argmax after the repetition penalty, matching the
-  reference implementation. Sampling here loses end-of-speech.
-- **Multilingual means the tag is required.** Text is prefixed with the
-  tokenizer's `[xx]` language token; the app's Kokoro-style locale codes are
-  reduced to the bare ISO code (`en-us` → `en`, `cmn` → `zh`) to find it.
+The waveform button beside the message field opens a dedicated voice screen
+with a large center orb that reacts to microphone level and shows whether the
+app is listening, understanding, or responding. The app records 16 kHz mono
+audio until speech is followed by
+about 1.2 seconds of silence, transcribes it with Whisper, sends the transcript to
+the LLM, speaks the response, and then begins listening again without another tap.
+It waits up to 12 seconds for speech and caps an individual turn at 30 seconds.
+The conversation status and an explicit Stop control remain visible above the
+composer while the mode is active.
+During a response the microphone remains active. Sustained speech stops both
+token generation and audio playback, transcribes the interruption, and
+immediately uses it as the next conversational turn. A sustained-speech gate
+reduces false interruptions from brief sounds.
 
-- **KV cache stays native.** `flutter_onnxruntime` holds `OrtValue`s by id, so
-  `present.N.*` outputs are handed straight back as `past_key_values.N.*` inputs.
-  60 tensors per step never cross the platform channel. The previous step's cache
-  is disposed only after the next is captured.
-- **Sidecar filenames are load-bearing.** Each graph names its `.onnx_data`
-  internally and ONNX Runtime resolves that relative to the graph, so bundle
-  files keep their original basenames in one directory. A test enforces it.
-- **25 Hz was measured, not assumed** — 75 tokens decode to 72,000 samples at
-  24 kHz. `speaker_features` is the reference mel at 50 Hz; the vocoder trims
-  the reference prefix from its output, which is how cloning is conditioned.
-- **The tokenizer is case-sensitive.** Its normalizer is a Replace of `" "` with
-  `[SPACE]`, *not* a Lowercase, and the vocabulary contains uppercase letters.
-  Folding case picks tokens the model was never trained on. Each space is its
-  own `[SPACE]`; runs are not collapsed.
-- **The template comes from the post-processor, not the vocabulary.** Every
-  encoding is `<EXAGGERATION> <s> …text… </s> <START_SPEECH> <START_SPEECH>`,
-  and the two outer ids (6563, 6561) are outside the 2,454-entry vocabulary —
-  they address the language model's speech range. The trailing pair is what
-  switches the model from continuing text to generating speech. A test pins
-  encodings against Hugging Face `tokenizers` id for id.
+Interruption monitoring closes before synthesized audio begins. The current
+file-recorder backend has no acoustic echo cancellation on iOS; leaving it open
+during playback made the assistant transcribe its own voice and enter a feedback
+loop. Barge-in therefore interrupts token generation today, while spoken-audio
+barge-in remains disabled until capture moves to an echo-cancelled stream.
 
-`generation_config.json` supplies the sampling parameters: eos ids `{2, 6562}`
-and repetition penalty 1.2.
+Opening and closing Settings preserves resident LLM, STT, and TTS sessions. A
+dormant TTS engine is not loaded just to populate its voice list; engine changes
+take effect lazily on first use, and the LLM is reloaded only when the selected
+model file changes.
+
+### Whisper native patch
+
+`whisper_ggml` is resolved from `third_party/whisper_ggml` rather than the Pub
+cache. The vendored 2.4.0 source bypasses FFmpeg when input is already WAV and
+captures the WAV channel count before `drwav_uninit`; this avoids an extra
+native-memory peak and a post-teardown metadata read at transcription startup.
+It also keeps the existing iOS FFI response-allocation and invalid-UTF-8 fixes
+reproducible on clean machines.
+
+To remove the vendored patch after upstream incorporates all of those fixes,
+delete the `whisper_ggml` path entry under `dependency_overrides`, remove
+`third_party/whisper_ggml`, run `flutter pub get`, and regenerate CocoaPods with
+`pod install` from `ios/`. Keep the Podfile's `_request` linker retention until
+upstream stops resolving that symbol through `DynamicLibrary.process()`.
+
+### Chatterbox Nano pipeline
+
+Four community ONNX graphs from
+[owensong/chatterbox-nano-ONNX](https://huggingface.co/owensong/chatterbox-nano-ONNX),
+derived from [ResembleAI/chatterbox-nano](https://huggingface.co/ResembleAI/chatterbox-nano):
+
+1. `embed_tokens_fp16` — GPT-2 text/speech ids → `inputs_embeds[1,S,768]`
+2. `language_model_q4f16` — embeds, attention/position ids, and 12 FP16
+   KV-cache layers
+   → `logits[1,S,6563]`, decoded autoregressively at **25 Hz**
+3. `speech_encoder_q4f16` — reference audio → conditioning prefix, reference
+   speech tokens, speaker embedding, and speaker features
+4. `conditional_decoder_q4` — reference and generated speech tokens plus three
+   trailing silence tokens → a 24 kHz waveform in one distilled pass
+
+The language model is conditioned by prepending the speech encoder's features
+to the text embeddings. Its 24 cache tensors remain in native ONNX Runtime
+memory between steps. Decoding is greedy after the official 1.2 repetition
+penalty and stops only on speech token 6562.
+
+Nano uses GPT-2 byte-level BPE, appends two `<|endoftext|>` tokens, and is
+English-only. Native performance tags include `[laugh]`, `[chuckle]`, `[cough]`,
+`[sigh]`, `[gasp]`, and `[whispering]`. Each Q4 graph requires its matching
+`.onnx_data` sidecar in the same directory.
+
+After Nano has loaded successfully once, the obsolete Turbo and Multilingual
+bundles are deleted to reclaim disk space. They can be recovered only by
+downloading those retired bundles again from their Hugging Face repositories.
 
 ## Architecture
 

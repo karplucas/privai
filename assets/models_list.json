@@ -19,28 +19,6 @@
       "description": "Same generation, more capable; wants a high-end device",
       "gated": false,
       "license": "Apache-2.0"
-    },
-    {
-      "name": "Gemma 3 1B Instruct",
-      "repo": "litert-community/Gemma3-1B-IT",
-      "file": "Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm",
-      "filename": "Gemma3-1B-IT_multi-prefill-seq_q4_ekv4096.litertlm",
-      "size": "600MB",
-      "description": "Fast and efficient, good for mobile",
-      "gated": true,
-      "license": "Gemma Terms of Use",
-      "licenseNote": "Google requires you to review and accept the Gemma Terms of Use on Hugging Face before this model can be downloaded."
-    },
-    {
-      "name": "Gemma 3n E2B Instruct",
-      "repo": "google/gemma-3n-E2B-it-litert-preview",
-      "file": "gemma-3n-E2B-it-int4.task",
-      "filename": "gemma-3n-E2B-it-int4.task",
-      "size": "2.9GB",
-      "description": "More capable, higher quality responses",
-      "gated": true,
-      "license": "Gemma Terms of Use",
-      "licenseNote": "Google requires you to review and accept the Gemma Terms of Use on Hugging Face before this model can be downloaded."
     }
   ],
   "tts": [
@@ -52,53 +30,112 @@
       "homepage": "https://github.com/thewh1teagle/kokoro-onnx",
       "filename": "kokoro-v1_0.onnx",
       "size": "326MB",
-      "description": "High quality multilingual voice synthesis",
+      "description": "Languages: US/UK English, Japanese, Mandarin Chinese, Spanish, Hindi, Italian, Brazilian Portuguese",
       "gated": false,
       "license": "Apache-2.0",
       "engine": "kokoro"
     },
     {
-      "name": "Chatterbox Multilingual",
-      "repo": "onnx-community/chatterbox-multilingual-ONNX",
+      "name": "Chatterbox Nano Q4F16",
+      "repo": "owensong/chatterbox-nano-ONNX",
+      "revision": "4a66d7dab72a9e98f24b515d49a1d7a81632df2e",
       "engine": "chatterbox",
-      "directory": "chatterbox-multilingual",
-      "filename": "chatterbox-multilingual",
+      "directory": "chatterbox-nano-q4f16",
+      "filename": "chatterbox-nano-q4f16",
       "files": [
         {
-          "file": "onnx/embed_tokens.onnx"
+          "file": "onnx/embed_tokens_fp16.onnx"
         },
         {
-          "file": "onnx/embed_tokens.onnx_data"
+          "file": "onnx/embed_tokens_fp16.onnx_data"
         },
         {
-          "file": "onnx/language_model_q4.onnx"
+          "file": "onnx/language_model_q4f16.onnx"
         },
         {
-          "file": "onnx/language_model_q4.onnx_data"
+          "file": "onnx/language_model_q4f16.onnx_data"
         },
         {
-          "file": "onnx/speech_encoder.onnx"
+          "file": "onnx/speech_encoder_q4f16.onnx"
         },
         {
-          "file": "onnx/speech_encoder.onnx_data"
+          "file": "onnx/speech_encoder_q4f16.onnx_data"
         },
         {
-          "file": "onnx/conditional_decoder.onnx"
+          "file": "onnx/conditional_decoder_q4.onnx"
         },
         {
-          "file": "onnx/conditional_decoder.onnx_data"
+          "file": "onnx/conditional_decoder_q4.onnx_data"
         },
         {
           "file": "tokenizer.json"
         },
         {
-          "file": "default_voice.wav"
+          "file": "default_voice.wav",
+          "repo": "ipsilondev/chatterbox-multilingual-ONNX-q4",
+          "revision": "aa4a29a4535badd08b38d55e17112a2bce9a84f0"
         }
       ],
-      "size": "1.6GB",
-      "description": "23 languages and voice cloning; slower and much larger",
+      "size": "570MB",
+      "description": "Fast 110M English model with voice cloning and performance tags",
       "gated": false,
       "license": "MIT"
+    },
+    {
+      "name": "OmniVoice Bidirectional FP32 (ONNX)",
+      "repo": "dellusional/OmniVoice-ONNX-bidirectional",
+      "revision": "a0109dfbd1ec0ec5874d15a1b32353886a5f17dc",
+      "engine": "omnivoice",
+      "directory": "omnivoice-int4",
+      "filename": "omnivoice-int4",
+      "files": [
+        {
+          "file": "audio_embeddings_encoder.onnx",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "audio_embeddings_encoder.onnx.data",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "audio_heads_decoder.onnx",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "llm_backbone_fp32.onnx"
+        },
+        {
+          "file": "llm_backbone_fp32.onnx.data"
+        },
+        {
+          "file": "int4/tokenizer.json",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "model_config.json",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "audio_tokenizer/fp16/higgs_decoder.onnx",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "audio_tokenizer/fp16/higgs_decoder.onnx.data",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        }
+      ],
+      "size": "2.16GB",
+      "description": "Very slow; automatic voice and support for 646 languages",
+      "gated": false,
+      "license": "CC-BY-NC-4.0",
+      "licenseNote": "The OmniVoice pretrained weights are for non-commercial use. The Higgs audio decoder has separate Boson/Meta community terms."
     }
   ],
   "stt": [

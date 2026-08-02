@@ -25,13 +25,24 @@ enum ModelKind {
 /// that name relative to the graph, so [name] must be preserved exactly and the
 /// pair must land in the same directory.
 class ModelFile {
-  const ModelFile({required this.pathInRepo, required this.name});
+  const ModelFile({
+    required this.pathInRepo,
+    required this.name,
+    this.repo,
+    this.revision,
+  });
 
   /// Path within the source repository.
   final String pathInRepo;
 
   /// Filename on disk. Defaults to the repo path's basename.
   final String name;
+
+  /// Optional source override for bundles assembled from compatible exports.
+  final String? repo;
+
+  /// Revision in [repo], or the parent model revision when omitted.
+  final String? revision;
 
   factory ModelFile.fromJson(Object? json) {
     if (json is String) {
@@ -45,6 +56,8 @@ class ModelFile {
       return ModelFile(
         pathInRepo: path,
         name: json['as'] as String? ?? path.split('/').last,
+        repo: json['repo'] as String?,
+        revision: json['revision'] as String?,
       );
     }
     throw FormatException('Unrecognised model file entry: $json');
@@ -142,8 +155,10 @@ class ModelSpec {
   /// Download URL for [file].
   Uri urlFor(ModelFile file) {
     if (urlOverride != null && !isBundle) return Uri.parse(urlOverride!);
+    final sourceRepo = file.repo ?? repo;
+    final sourceRevision = file.revision ?? revision;
     return Uri.parse(
-      'https://huggingface.co/$repo/resolve/$revision/${file.pathInRepo}',
+      'https://huggingface.co/$sourceRepo/resolve/$sourceRevision/${file.pathInRepo}',
     );
   }
 

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -8,9 +9,11 @@ import '../services/app_settings.dart';
 import '../services/conversation_service.dart';
 import '../services/llm_service.dart';
 import '../services/tts_router.dart';
+import '../services/voice_activity_detector.dart';
 import '../services/whisper_service.dart';
 import 'models_page.dart';
 import 'theme.dart';
+import 'voice_conversation_page.dart';
 
 /// The main chat screen.
 class ChatScreen extends StatefulWidget {
@@ -22,7 +25,7 @@ class ChatScreen extends StatefulWidget {
   State<ChatScreen> createState() => ChatScreenState();
 }
 
-class ChatScreenState extends State<ChatScreen> {
+class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   final List<Map<String, String>> _messages = [];
   final TextEditingController _textController = TextEditingController();
   final FocusNode _composerFocusNode = FocusNode();
@@ -55,16 +58,24 @@ class ChatScreenState extends State<ChatScreen> {
   bool _ttsEnabled = true;
   bool _sttEnabled = true;
   bool _saveChatHistory = true;
+  bool _voiceModeActive = false;
+  String _voiceModeStatus = 'Listening…';
+  int _voiceModeGeneration = 0;
+  final ValueNotifier<String> _voiceStatus = ValueNotifier('Listening…');
+  final ValueNotifier<double> _voiceLevel = ValueNotifier(0);
+  final ValueNotifier<bool> _voiceActive = ValueNotifier(false);
 
   /// Non-null when the model could not be loaded; shown as a banner with a
   /// shortcut to the models page.
   String? _modelError;
 
   Conversation? _currentConversation;
+  int _composerFocusRequest = 0;
 
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _scrollController.addListener(_trackScrollPosition);
     _startUp();
   }
@@ -78,14 +89,41 @@ class ChatScreenState extends State<ChatScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _composerFocusRequest++;
+    final wasInVoiceMode = _voiceModeActive;
+    _voiceModeActive = false;
+    _voiceModeGeneration++;
+    if (wasInVoiceMode) {
+      unawaited(_discardActiveVoiceRecording());
+    }
     _textController.dispose();
     _composerFocusNode.dispose();
     _scrollController.dispose();
+    _voiceStatus.dispose();
+    _voiceLevel.dispose();
+    _voiceActive.dispose();
     // The services are process-wide singletons shared with the settings screen,
     // so they are deliberately not disposed here — the previous version tore
     // them down whenever this widget went away, leaving the app with a dead
     // recorder and audio player.
     super.dispose();
+  }
+
+  Future<void> _discardActiveVoiceRecording() async {
+    if (!await _whisperService.isRecording) return;
+    final path = await _whisperService.stopRecording();
+    if (path == null) return;
+    try {
+      await File(path).delete();
+    } catch (_) {}
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && _composerFocusNode.hasFocus) {
+      _focusComposer();
+    }
   }
 
   Future<void> _startUp() async {
@@ -223,7 +261,10 @@ class ChatScreenState extends State<ChatScreen> {
 
   // --- Messaging ---
 
-  Future<void> _sendMessage(String text) async {
+  Future<void> _sendMessage(
+    String text, {
+    Future<void> Function()? beforeSpeech,
+  }) async {
     final userText = text.trim();
     if (userText.isEmpty || _isProcessing) return;
 
@@ -231,6 +272,13 @@ class ChatScreenState extends State<ChatScreen> {
       _showMessage(_modelError ?? 'The language model is still loading.');
       return;
     }
+
+    // Deleting the active conversation intentionally leaves an unsaved blank
+    // canvas. Start creating its backing record on the first real message, but
+    // do not make the visible send wait for file/keychain I/O.
+    final conversationFuture = _currentConversation == null
+        ? _conversationService.createNewConversation()
+        : null;
 
     _textController.clear();
     setState(() {
@@ -243,6 +291,11 @@ class ChatScreenState extends State<ChatScreen> {
       _isStreaming = true;
       _stopRequested = false;
     });
+    if (_voiceModeActive) {
+      _composerFocusNode.unfocus();
+    } else {
+      _focusComposer();
+    }
     _scrollToBottom();
 
     // Held by reference rather than by index: starting a new conversation
@@ -251,14 +304,31 @@ class ChatScreenState extends State<ChatScreen> {
     final replyMessage = _messages.last;
     final buffer = StringBuffer();
     var failed = false;
+    final Future<TtsResponseQueue?>? speechQueueFuture =
+        _ttsEnabled && !_llmService.isUsingDebugResponse
+            ? _tts
+                .responseQueue()
+                .then<TtsResponseQueue?>((queue) => queue)
+                .catchError(
+                (Object e) {
+                  debugPrint('ChatScreen: could not prepare speech queue: $e');
+                  return null;
+                },
+              )
+            : null;
 
     try {
-      await for (final chunk in _llmService.generateResponseStream(userText)) {
+      await for (final chunk in _withGenerationWatchdog(
+        _llmService.generateResponseStream(userText),
+      )) {
         if (!mounted) return;
         // Leaving the loop cancels the underlying subscription, which stops the
         // model rather than just hiding its output.
         if (_stopRequested) break;
         buffer.write(chunk);
+        if (speechQueueFuture != null) {
+          unawaited(speechQueueFuture.then((queue) => queue?.add(chunk)));
+        }
         setState(() => replyMessage['text'] = buffer.toString());
         _scrollToBottomWhileStreaming();
       }
@@ -296,24 +366,37 @@ class ChatScreenState extends State<ChatScreen> {
       }
     });
 
+    if (conversationFuture != null) {
+      try {
+        _currentConversation = await conversationFuture;
+      } catch (e) {
+        debugPrint('ChatScreen: could not create conversation history: $e');
+      }
+      if (!mounted) return;
+    }
     await _saveCurrentConversation();
+    await beforeSpeech?.call();
 
     final reply = buffer.toString();
-    if (_ttsEnabled && !failed && !stopped && reply.trim().isNotEmpty) {
-      // Spoken once the full reply is known; synthesising per token would
-      // produce disjointed audio. The router picks the configured engine and,
-      // for Chatterbox, frees the language model while it runs.
-      await _speak(reply);
-    }
-  }
-
-  Future<void> _speak(String text) async {
-    final spoken = await _tts.speak(text);
-    if (!spoken) {
-      _showMessage(
-        'Could not generate audio with the selected speech engine. '
-        'Check the model files and try again.',
+    final speechQueue = await speechQueueFuture;
+    if (speechQueue != null && !failed && !stopped && reply.trim().isNotEmpty) {
+      final spoken = await speechQueue.finish().timeout(
+        const Duration(seconds: 45),
+        onTimeout: () async {
+          debugPrint('ChatScreen: speech timed out after 45 seconds');
+          await _tts.stopAll();
+          return false;
+        },
       );
+      if (!spoken) {
+        _showMessage(
+          'Could not generate audio with the selected speech engine. '
+          'Check the model files and try again.',
+        );
+      }
+    } else if ((failed || stopped) &&
+        speechQueue?.speakWhileGenerating == true) {
+      await _tts.stopAll();
     }
   }
 
@@ -322,6 +405,232 @@ class ChatScreenState extends State<ChatScreen> {
     return message.contains('context') ||
         message.contains('token') ||
         message.contains('max_tokens');
+  }
+
+  /// Closes its downstream side immediately when the backend stops emitting.
+  /// Upstream cancellation is deliberately best-effort: a wedged native stream
+  /// must not keep the UI waiting for cancellation acknowledgement.
+  Stream<String> _withGenerationWatchdog(Stream<String> source) {
+    late final StreamController<String> controller;
+    StreamSubscription<String>? subscription;
+    Timer? timer;
+    var hasOutput = false;
+
+    void armTimer() {
+      timer?.cancel();
+      final wait =
+          hasOutput ? const Duration(seconds: 8) : const Duration(seconds: 15);
+      timer = Timer(wait, () {
+        debugPrint(
+          'ChatScreen: generation idle for ${wait.inSeconds}s; '
+          'closing the response stream',
+        );
+        unawaited(controller.close());
+        final current = subscription;
+        if (current != null) unawaited(current.cancel());
+      });
+    }
+
+    controller = StreamController<String>(
+      onListen: () {
+        armTimer();
+        subscription = source.listen(
+          (chunk) {
+            if (controller.isClosed) return;
+            hasOutput = true;
+            armTimer();
+            controller.add(chunk);
+          },
+          onError: controller.addError,
+          onDone: () {
+            timer?.cancel();
+            unawaited(controller.close());
+          },
+        );
+      },
+      onCancel: () {
+        timer?.cancel();
+        final current = subscription;
+        if (current != null) unawaited(current.cancel());
+      },
+    );
+    return controller.stream;
+  }
+
+  Future<void> _speak(String text) async {
+    final queue = await _tts.responseQueue();
+    queue.add(text);
+    final spoken = await queue.finish();
+    if (!spoken) {
+      _showMessage(
+        'Could not generate audio with the selected speech engine. '
+        'Check the model files and try again.',
+      );
+    }
+  }
+
+  Future<void> _toggleVoiceMode() async {
+    if (_voiceModeActive) {
+      await _stopVoiceMode();
+      return;
+    }
+    if (!_sttEnabled || !_ttsEnabled) {
+      _showMessage('Enable both speech-to-text and text-to-speech first.');
+      return;
+    }
+    if (!_llmService.isReady) {
+      _showMessage(_modelError ?? 'The language model is not ready.');
+      return;
+    }
+    final permission = await Permission.microphone.request();
+    if (!permission.isGranted) {
+      _showMessage('Microphone permission is required for voice mode.');
+      return;
+    }
+
+    final generation = ++_voiceModeGeneration;
+    setState(() {
+      _voiceModeActive = true;
+      _voiceModeStatus = 'Listening…';
+    });
+    _voiceStatus.value = 'Listening…';
+    _voiceLevel.value = 0;
+    _voiceActive.value = true;
+    _composerFocusNode.unfocus();
+    unawaited(_showVoiceConversation(generation));
+    unawaited(_runVoiceMode(generation));
+  }
+
+  Future<void> _showVoiceConversation(int generation) async {
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (_) => VoiceConversationPage(
+          status: _voiceStatus,
+          level: _voiceLevel,
+          active: _voiceActive,
+          onStop: _stopVoiceMode,
+        ),
+      ),
+    );
+    if (_voiceModeIsCurrent(generation)) await _stopVoiceMode();
+  }
+
+  Future<void> _stopVoiceMode() async {
+    final wasActive = _voiceModeActive;
+    _voiceModeActive = false;
+    _voiceModeGeneration++;
+    _voiceActive.value = false;
+    _voiceLevel.value = 0;
+    if (mounted && wasActive) setState(() {});
+    if (wasActive && await _whisperService.isRecording) {
+      final path = await _whisperService.stopRecording();
+      if (path != null) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
+    }
+  }
+
+  Future<void> _runVoiceMode(int generation) async {
+    String? queuedSpeech;
+    while (_voiceModeIsCurrent(generation)) {
+      String? audioPath;
+      try {
+        var transcription = queuedSpeech;
+        queuedSpeech = null;
+        if (transcription == null) {
+          _setVoiceModeStatus('Listening…');
+          await _whisperService.startRecording();
+          audioPath = await _waitForVoiceTurn(generation);
+          if (audioPath == null) continue;
+
+          _setVoiceModeStatus('Understanding…');
+          transcription = await _whisperService.transcribeFromFile(audioPath);
+        }
+        if (!_voiceModeIsCurrent(generation)) return;
+        if (transcription.trim().isEmpty) continue;
+
+        _setVoiceModeStatus('Responding…');
+        queuedSpeech = await _respondWithoutInterruption(
+          transcription,
+          generation,
+        );
+      } catch (e) {
+        debugPrint('ChatScreen: voice mode failed: $e');
+        if (_voiceModeIsCurrent(generation)) {
+          _showMessage('Voice conversation stopped: $e');
+          await _stopVoiceMode();
+        }
+        return;
+      } finally {
+        if (audioPath != null) {
+          try {
+            final file = File(audioPath);
+            if (await file.exists()) await file.delete();
+          } catch (_) {}
+        }
+      }
+    }
+  }
+
+  Future<String?> _respondWithoutInterruption(
+    String text,
+    int generation,
+  ) async {
+    await _sendMessage(text, beforeSpeech: () async {
+      if (!_voiceModeIsCurrent(generation)) return;
+      _voiceLevel.value = 0;
+      _setVoiceModeStatus('Speaking…');
+    });
+    return null;
+  }
+
+  Future<String?> _waitForVoiceTurn(int generation) async {
+    final detector = VoiceActivityDetector(startedAt: DateTime.now());
+    while (_voiceModeIsCurrent(generation)) {
+      await Future<void>.delayed(const Duration(milliseconds: 150));
+      if (!_voiceModeIsCurrent(generation)) break;
+      final amplitudeDb = await _whisperService.currentAmplitudeDb;
+      if (_voiceModeIsCurrent(generation)) {
+        // Map ordinary speech (-50 to -10 dBFS) onto the orb's visual range.
+        _voiceLevel.value = ((amplitudeDb + 50) / 40).clamp(0.0, 1.0);
+      }
+      final state = detector.add(amplitudeDb, DateTime.now());
+      if (state == VoiceTurnState.listening) continue;
+
+      final path = await _whisperService.stopRecording();
+      if (state == VoiceTurnState.noSpeech) {
+        if (path != null) {
+          try {
+            await File(path).delete();
+          } catch (_) {}
+        }
+        return null;
+      }
+      return path;
+    }
+
+    if (await _whisperService.isRecording) {
+      final path = await _whisperService.stopRecording();
+      if (path != null) {
+        try {
+          await File(path).delete();
+        } catch (_) {}
+      }
+    }
+    return null;
+  }
+
+  bool _voiceModeIsCurrent(int generation) =>
+      mounted && _voiceModeActive && generation == _voiceModeGeneration;
+
+  void _setVoiceModeStatus(String status) {
+    if (!mounted || !_voiceModeActive) return;
+    _voiceStatus.value = status;
+    if (status != 'Listening…') _voiceLevel.value = 0;
+    setState(() => _voiceModeStatus = status);
   }
 
   Future<void> _toggleRecording() async {
@@ -415,18 +724,31 @@ class ChatScreenState extends State<ChatScreen> {
   }
 
   Future<void> _openSettings() async {
+    await _stopVoiceMode();
+    if (!mounted) return;
     final changed = await Navigator.push<bool>(
       context,
       MaterialPageRoute(builder: (_) => const ModelsPage()),
     );
     if (!mounted || changed != true) return;
 
-    // Settings that alter how a model is loaded only take effect on a reload.
     await _loadSettings();
     await _initializeLlmAfterSettingsChange();
   }
 
   Future<void> _initializeLlmAfterSettingsChange() async {
+    // Voice/language/speed and generation settings are read lazily. Preserve
+    // every resident model unless the selected LLM itself changed.
+    if (!await _llmService.isStale) {
+      if (_sttEnabled) {
+        try {
+          await _whisperService.initialize();
+        } catch (e) {
+          debugPrint('ChatScreen: speech-to-text unavailable: $e');
+        }
+      }
+      return;
+    }
     setState(() {
       _isModelLoading = true;
       _modelError = null;
@@ -439,16 +761,9 @@ class ChatScreenState extends State<ChatScreen> {
       if (mounted) setState(() => _isModelLoading = false);
     }
 
-    if (_ttsEnabled) {
-      try {
-        await _tts.applySettingsChange();
-      } catch (e) {
-        debugPrint('ChatScreen: text-to-speech unavailable: $e');
-      }
-    }
     if (_sttEnabled) {
       try {
-        await _whisperService.initialize(force: true);
+        await _whisperService.initialize();
       } catch (e) {
         debugPrint('ChatScreen: speech-to-text unavailable: $e');
       }
@@ -471,6 +786,7 @@ class ChatScreenState extends State<ChatScreen> {
             if (_modelError != null) _buildModelErrorBanner(),
             Expanded(child: _buildMessageList()),
             if (_isTranscribing) _buildStatusLine('Transcribing…'),
+            if (_voiceModeActive) _buildVoiceModeStatus(),
             if (_isStreaming) _buildStopButton(),
             _buildComposer(),
           ],
@@ -772,6 +1088,20 @@ class ChatScreenState extends State<ChatScreen> {
         ),
       );
 
+  Widget _buildVoiceModeStatus() => Padding(
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Icon(Icons.graphic_eq, size: 20),
+            const SizedBox(width: 8),
+            Text(_voiceModeStatus),
+            const SizedBox(width: 12),
+            TextButton(onPressed: _stopVoiceMode, child: const Text('Stop')),
+          ],
+        ),
+      );
+
   Widget _buildComposer() {
     final theme = Theme.of(context);
     final gradients = AppGradients.of(context);
@@ -781,67 +1111,133 @@ class ChatScreenState extends State<ChatScreen> {
       top: false,
       child: Padding(
         padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-        child: Container(
-          padding: const EdgeInsets.fromLTRB(18, 4, 4, 4),
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            borderRadius: BorderRadius.circular(28),
-            border: Border.all(color: gradients.hairline),
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _textController,
-                  focusNode: _composerFocusNode,
-                  enabled: !busy,
-                  keyboardType: TextInputType.text,
-                  textInputAction: TextInputAction.send,
-                  onSubmitted: _sendMessage,
-                  maxLines: 5,
-                  minLines: 1,
-                  scrollPadding: const EdgeInsets.only(bottom: 24),
-                  style: theme.textTheme.bodyMedium,
-                  decoration: InputDecoration(
-                    isDense: true,
-                    filled: false,
-                    border: InputBorder.none,
-                    enabledBorder: InputBorder.none,
-                    focusedBorder: InputBorder.none,
-                    disabledBorder: InputBorder.none,
-                    contentPadding: const EdgeInsets.symmetric(vertical: 14),
-                    hintText: 'Send message…',
-                    hintStyle: theme.textTheme.bodyMedium
-                        ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: _focusComposer,
+          child: Container(
+            padding: const EdgeInsets.fromLTRB(18, 4, 4, 4),
+            decoration: BoxDecoration(
+              color: theme.colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(28),
+              border: Border.all(color: gradients.hairline),
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                Expanded(
+                  child: TextField(
+                    key: const ValueKey('message_composer'),
+                    controller: _textController,
+                    focusNode: _composerFocusNode,
+                    keyboardType: TextInputType.text,
+                    textInputAction: TextInputAction.send,
+                    onSubmitted: busy ? null : _sendMessage,
+                    onTap: () {
+                      // InputUI can be restarted by iOS after memory pressure
+                      // while Flutter's node still reports focus. Explicitly
+                      // reopen the platform keyboard on every composer tap.
+                      SystemChannels.textInput
+                          .invokeMethod<void>('TextInput.show');
+                    },
+                    maxLines: 5,
+                    minLines: 1,
+                    scrollPadding: const EdgeInsets.only(bottom: 24),
+                    style: theme.textTheme.bodyMedium,
+                    decoration: InputDecoration(
+                      isDense: true,
+                      filled: false,
+                      border: InputBorder.none,
+                      enabledBorder: InputBorder.none,
+                      focusedBorder: InputBorder.none,
+                      disabledBorder: InputBorder.none,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 14),
+                      hintText: 'Send message…',
+                      hintStyle: theme.textTheme.bodyMedium
+                          ?.copyWith(color: theme.colorScheme.onSurfaceVariant),
+                    ),
                   ),
                 ),
-              ),
-              if (_sttEnabled)
-                IconButton(
-                  tooltip: _isRecording ? 'Stop recording' : 'Record',
-                  icon: Icon(
-                    _isRecording ? Icons.stop : Icons.mic,
-                    size: 22,
-                    color: _isRecording
-                        ? theme.colorScheme.error
-                        : theme.colorScheme.onSurfaceVariant,
+                if (_sttEnabled && _ttsEnabled)
+                  IconButton(
+                    key: const ValueKey('voice_mode_button'),
+                    tooltip: _voiceModeActive
+                        ? 'Stop voice conversation'
+                        : 'Start voice conversation',
+                    icon: Icon(
+                      _voiceModeActive ? Icons.stop_circle : Icons.graphic_eq,
+                      color: _voiceModeActive
+                          ? theme.colorScheme.error
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
+                    onPressed: _toggleVoiceMode,
                   ),
-                  onPressed: _isTranscribing ? null : _toggleRecording,
+                if (_sttEnabled)
+                  IconButton(
+                    tooltip: _isRecording ? 'Stop recording' : 'Record',
+                    icon: Icon(
+                      _isRecording ? Icons.stop : Icons.mic,
+                      size: 22,
+                      color: _isRecording
+                          ? theme.colorScheme.error
+                          : theme.colorScheme.onSurfaceVariant,
+                    ),
+                    onPressed: _isTranscribing || _voiceModeActive
+                        ? null
+                        : _toggleRecording,
+                  ),
+                Padding(
+                  // The row is bottom-aligned for a growing multiline field.
+                  // Its 48 pt single-line height is 6 pt taller than this
+                  // button, so half that difference centers the blue circle.
+                  padding: const EdgeInsets.only(bottom: 3),
+                  child: GradientIconButton(
+                    key: const ValueKey('send_message_button'),
+                    icon: Icons.send,
+                    tooltip: 'Send',
+                    size: 42,
+                    glow: true,
+                    onPressed:
+                        busy ? null : () => _sendMessage(_textController.text),
+                  ),
                 ),
-              GradientIconButton(
-                icon: Icons.send,
-                tooltip: 'Send',
-                size: 42,
-                glow: true,
-                onPressed:
-                    busy ? null : () => _sendMessage(_textController.text),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),
     );
+  }
+
+  /// Reconnects Flutter's focus node to the platform text-input client.
+  ///
+  /// iOS can close the keyboard connection while preserving `hasFocus` (for
+  /// example after submitting, navigating back, or dismissing an overlay). A
+  /// plain tap then appears to do nothing because Flutter thinks the field is
+  /// already focused. Explicitly requesting focus and showing text input makes
+  /// the whole composer reliably recoverable.
+  void _focusComposer() {
+    if (!mounted) return;
+    final request = ++_composerFocusRequest;
+
+    // `requestFocus` is a no-op when the node already claims focus, even if
+    // iOS discarded the associated text-input client while the app slept or a
+    // route/overlay was open. Cycling focus forces EditableText to create a new
+    // platform connection. The controller preserves text and selection.
+    if (_composerFocusNode.hasFocus) {
+      _composerFocusNode.unfocus();
+    }
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || request != _composerFocusRequest) return;
+      _composerFocusNode.requestFocus();
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted ||
+            request != _composerFocusRequest ||
+            !_composerFocusNode.hasFocus) {
+          return;
+        }
+        SystemChannels.textInput.invokeMethod<void>('TextInput.show');
+      });
+    });
   }
 
   Widget _buildDrawer() {
@@ -1060,7 +1456,12 @@ class ChatScreenState extends State<ChatScreen> {
 
     await _conversationService.deleteConversation(conversation.id);
     if (_currentConversation?.id == conversation.id) {
-      await _startNewConversation();
+      await _llmService.clearContext();
+      if (!mounted) return;
+      setState(() {
+        _currentConversation = null;
+        _messages.clear();
+      });
     }
     if (mounted) _refreshHistory();
   }

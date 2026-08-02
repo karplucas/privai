@@ -1,6 +1,10 @@
+import 'dart:async';
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 
 import 'services/asset_bundle_override.dart';
+import 'services/model_download_manager.dart';
 import 'ui/chat_page.dart';
 import 'ui/theme.dart';
 
@@ -14,6 +18,15 @@ void main() {
   // 52 MB to the app. Everything else loads from the real bundle as usual.
   AssetOverrideBinding.ensureInitialized();
   runApp(const MyApp());
+  if (Platform.environment['FLUTTER_TEST'] != 'true') {
+    unawaited(
+      ModelDownloadManager()
+          .initializeBackgroundDownloads()
+          .catchError((error) {
+        debugPrint('Background downloader initialization failed: $error');
+      }),
+    );
+  }
 }
 
 class MyApp extends StatefulWidget {

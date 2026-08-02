@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
+import 'package:background_downloader/background_downloader.dart';
 import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_web_auth_2/flutter_web_auth_2.dart';
@@ -70,7 +71,20 @@ class DownloadProgress {
 class CancellationToken {
   bool _cancelled = false;
   bool get isCancelled => _cancelled;
-  void cancel() => _cancelled = true;
+  void Function()? _onCancel;
+
+  void cancel() {
+    if (_cancelled) return;
+    _cancelled = true;
+    _onCancel?.call();
+  }
+
+  void attach(void Function() callback) {
+    _onCancel = callback;
+    if (_cancelled) callback();
+  }
+
+  void detach() => _onCancel = null;
 }
 
 /// Thrown when a download is asked to stop.
@@ -160,8 +174,9 @@ class HuggingFaceService {
     }
 
     final verifier = _randomUrlSafeString(64);
-    final challenge = base64UrlEncode(sha256.convert(utf8.encode(verifier)).bytes)
-        .replaceAll('=', '');
+    final challenge =
+        base64UrlEncode(sha256.convert(utf8.encode(verifier)).bytes)
+            .replaceAll('=', '');
     final state = _randomUrlSafeString(24);
 
     final authorizeUrl = _authorizeEndpoint.replace(queryParameters: {
@@ -190,7 +205,8 @@ class HuggingFaceService {
 
     if (result.queryParameters['state'] != state) {
       // Guards against a callback that did not originate from our request.
-      throw const HfDownloadException('Sign-in failed: mismatched OAuth state.');
+      throw const HfDownloadException(
+          'Sign-in failed: mismatched OAuth state.');
     }
 
     final code = result.queryParameters['code'];
@@ -200,19 +216,17 @@ class HuggingFaceService {
       );
     }
 
-    final response = await _client
-        .post(
-          _tokenEndpoint,
-          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-          body: {
-            'grant_type': 'authorization_code',
-            'client_id': clientId,
-            'code': code,
-            'code_verifier': verifier,
-            'redirect_uri': redirectUri,
-          },
-        )
-        .timeout(_requestTimeout);
+    final response = await _client.post(
+      _tokenEndpoint,
+      headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+      body: {
+        'grant_type': 'authorization_code',
+        'client_id': clientId,
+        'code': code,
+        'code_verifier': verifier,
+        'redirect_uri': redirectUri,
+      },
+    ).timeout(_requestTimeout);
 
     if (response.statusCode != 200) {
       throw HfDownloadException(
@@ -393,8 +407,8 @@ class HuggingFaceService {
   // Downloading
   // --------------------------------------------------------------------------
 
-  /// Downloads [spec] into [ModelStorage], resuming a previous partial transfer
-  /// when one is present.
+  /// Downloads [spec] into [ModelStorage] using the operating system's native
+  /// background transfer service.
   ///
   /// Access is re-checked here, immediately before any bytes move, so a gated
   /// model can never be fetched on the strength of a stale UI state. Returns the
@@ -422,85 +436,19 @@ class HuggingFaceService {
 
     final token = await _settings.hfToken;
     final targetPath = await _storage.pathFor(spec.filename);
-    final partialPath = await _storage.partialPathFor(spec.filename);
-    final partialFile = File(partialPath);
-
-    var alreadyHave =
-        await partialFile.exists() ? await partialFile.length() : 0;
-
-    var response = await _openStream(
-      spec.downloadUrl,
-      token: token,
-      rangeHeader: alreadyHave > 0 ? 'bytes=$alreadyHave-' : null,
-    );
-
-    if (alreadyHave > 0 && response.statusCode == 200) {
-      // The server ignored our range request, so the partial file is useless.
-      debugPrint('HuggingFaceService: range not honoured, restarting download');
-      alreadyHave = 0;
-    } else if (response.statusCode == 416) {
-      // Requested range is past the end of the file — the partial copy is stale.
-      await response.stream.drain<void>();
-      await partialFile.delete();
-      alreadyHave = 0;
-      response = await _openStream(spec.downloadUrl, token: token);
-    }
-
-    if (response.statusCode < 200 || response.statusCode >= 300) {
-      await response.stream.drain<void>();
-      final result = _interpretStatus(response.statusCode, response.headers,
-          hasToken: token != null);
-      throw HfDownloadException(
-        result.message ?? 'Download failed (HTTP ${response.statusCode}).',
-        access: result,
-      );
-    }
-
-    final total = _totalSize(response, alreadyHave: alreadyHave);
-    var received = alreadyHave;
-    onProgress?.call(DownloadProgress(received: received, total: total));
-
-    final sink = partialFile.openWrite(
-      mode: alreadyHave > 0 ? FileMode.append : FileMode.write,
-    );
-
-    try {
-      // Progress is reported at most ~200 times so a multi-gigabyte download
-      // does not spend its time rebuilding the widget tree.
-      final reportEvery = total == null ? 4 << 20 : max(total ~/ 200, 1 << 20);
-      var sinceLastReport = 0;
-
-      await for (final chunk in response.stream) {
-        if (cancellationToken?.isCancelled ?? false) {
-          throw const DownloadCancelled();
-        }
-        sink.add(chunk);
-        received += chunk.length;
-        sinceLastReport += chunk.length;
-        if (sinceLastReport >= reportEvery) {
-          sinceLastReport = 0;
-          onProgress?.call(DownloadProgress(received: received, total: total));
-        }
-      }
-      await sink.flush();
-    } finally {
-      await sink.close();
-    }
-
-    if (total != null && received != total) {
-      // Leave the partial file in place; the next attempt resumes from here.
-      throw HfDownloadException(
-        'Download ended early: got $received of $total bytes. '
-        'Try again to resume.',
-      );
-    }
-
     final target = File(targetPath);
-    if (await target.exists()) await target.delete();
-    await partialFile.rename(targetPath);
-
-    onProgress?.call(DownloadProgress(received: received, total: total));
-    debugPrint('HuggingFaceService: downloaded ${spec.filename} ($received B)');
+    final total = await _remoteSize(spec.downloadUrl, token);
+    await _downloadTo(
+      url: spec.downloadUrl,
+      target: target,
+      token: token,
+      expectedSize: total,
+      cancellationToken: cancellationToken,
+      onProgress: (received) => onProgress?.call(
+        DownloadProgress(received: received, total: total),
+      ),
+    );
+    debugPrint('HuggingFaceService: downloaded ${spec.filename}');
     return targetPath;
   }
 
@@ -553,6 +501,7 @@ class HuggingFaceService {
         url: spec.urlFor(file),
         target: target,
         token: token,
+        expectedSize: expected,
         cancellationToken: cancellationToken,
         onProgress: (received) => onProgress?.call(DownloadProgress(
           received: alreadyDone + received,
@@ -566,78 +515,142 @@ class HuggingFaceService {
     return (await _storage.bundleDirectory(bundle)).path;
   }
 
-  /// Streams one URL to [target], resuming a partial file when present.
+  /// Downloads one URL to [target] through the native background service.
   Future<void> _downloadTo({
     required Uri url,
     required File target,
     required String? token,
+    required int? expectedSize,
     required void Function(int received) onProgress,
     CancellationToken? cancellationToken,
   }) async {
-    final partial = File('${target.path}${ModelStorage.partialSuffix}');
-    var alreadyHave = await partial.exists() ? await partial.length() : 0;
+    if (cancellationToken?.isCancelled ?? false) {
+      throw const DownloadCancelled();
+    }
+    await target.parent.create(recursive: true);
+    if (await target.exists()) await target.delete();
+    // Old Dart-stream partials cannot be adopted by URLSession/DownloadWorker;
+    // remove one only when starting its native replacement.
+    final oldPartial = File('${target.path}${ModelStorage.partialSuffix}');
+    if (await oldPartial.exists()) await oldPartial.delete();
 
-    var response = await _openStream(
+    // Resolve Hugging Face to its signed CDN URL while Dart can read the token
+    // from secure storage. The background task then stores no bearer token and
+    // does not accidentally forward one to the CDN, which rejects it.
+    // Hugging Face's Xet bridge issues signed download URLs in response to a
+    // range probe and requires the eventual transfer to carry a Range header
+    // too. The range used to obtain that URL must be identical to the range
+    // used by the native transfer; otherwise Xet rejects it as "invalid
+    // range". Declaring the complete range also gives background_downloader an
+    // exact content length and remains compatible with pause/resume handling.
+    final rangeHeader = expectedSize != null && expectedSize > 0
+        ? 'bytes=0-${expectedSize - 1}'
+        : 'bytes=0-';
+    final backgroundUrl = await _backgroundUrl(
+      url,
+      token,
+      rangeHeader: rangeHeader,
+    );
+    final headers = <String, String>{'Range': rangeHeader};
+    final task = DownloadTask(
+      url: backgroundUrl.toString(),
+      headers: headers,
+      filename: target.uri.pathSegments.last,
+      directory: target.parent.path,
+      baseDirectory: BaseDirectory.root,
+      group: 'modelDownloads',
+      updates: Updates.statusAndProgress,
+      retries: 3,
+      allowPause: true,
+      displayName: target.uri.pathSegments.last,
+    );
+    cancellationToken?.attach(() {
+      FileDownloader().cancel(task);
+    });
+
+    TaskStatusUpdate result;
+    try {
+      result = await FileDownloader().download(
+        task,
+        onProgress: (fraction) {
+          if (fraction < 0) return;
+          final total = expectedSize;
+          onProgress(total == null ? 0 : (total * fraction).round());
+        },
+      );
+    } finally {
+      cancellationToken?.detach();
+    }
+
+    switch (result.status) {
+      case TaskStatus.complete:
+        final received = await target.length();
+        if (expectedSize != null && received != expectedSize) {
+          await target.delete();
+          throw HfDownloadException(
+            'Download of ${target.uri.pathSegments.last} has the wrong size: '
+            '$received of $expectedSize bytes.',
+          );
+        }
+        onProgress(received);
+        return;
+      case TaskStatus.canceled:
+      case TaskStatus.paused:
+        throw const DownloadCancelled();
+      case TaskStatus.notFound:
+        throw const HfDownloadException('Model file was not found (HTTP 404).');
+      case TaskStatus.failed:
+        final status = result.responseStatusCode;
+        if (status != null) {
+          final access = _interpretStatus(
+            status,
+            result.responseHeaders ?? const {},
+            hasToken: token != null,
+          );
+          throw HfDownloadException(
+            access.message ?? 'Download failed (HTTP $status).',
+            access: access,
+          );
+        }
+        throw HfDownloadException(
+          result.exception?.description ?? 'Background download failed.',
+        );
+      case TaskStatus.enqueued:
+      case TaskStatus.running:
+      case TaskStatus.waitingToRetry:
+        throw const HfDownloadException(
+          'Background download stopped before it completed.',
+        );
+    }
+  }
+
+  Future<Uri> _backgroundUrl(
+    Uri url,
+    String? token, {
+    required String rangeHeader,
+  }) async {
+    final response = await _openStream(
       url,
       token: token,
-      rangeHeader: alreadyHave > 0 ? 'bytes=$alreadyHave-' : null,
+      rangeHeader: rangeHeader,
     );
-
-    if (alreadyHave > 0 && response.statusCode == 200) {
-      alreadyHave = 0;
-    } else if (response.statusCode == 416) {
-      await response.stream.drain<void>();
-      await partial.delete();
-      alreadyHave = 0;
-      response = await _openStream(url, token: token);
-    }
-
+    final resolved = response.request?.url ?? url;
     if (response.statusCode < 200 || response.statusCode >= 300) {
       await response.stream.drain<void>();
-      final result = _interpretStatus(response.statusCode, response.headers,
-          hasToken: token != null);
+      final access = _interpretStatus(
+        response.statusCode,
+        response.headers,
+        hasToken: token != null,
+      );
       throw HfDownloadException(
-        result.message ?? 'Download failed (HTTP ${response.statusCode}).',
-        access: result,
+        access.message ?? 'Download failed (HTTP ${response.statusCode}).',
+        access: access,
       );
     }
-
-    final total = _totalSize(response, alreadyHave: alreadyHave);
-    var received = alreadyHave;
-    final sink = partial.openWrite(
-      mode: alreadyHave > 0 ? FileMode.append : FileMode.write,
-    );
-
-    try {
-      final reportEvery = total == null ? 4 << 20 : max(total ~/ 200, 1 << 20);
-      var sinceReport = 0;
-      await for (final chunk in response.stream) {
-        if (cancellationToken?.isCancelled ?? false) {
-          throw const DownloadCancelled();
-        }
-        sink.add(chunk);
-        received += chunk.length;
-        sinceReport += chunk.length;
-        if (sinceReport >= reportEvery) {
-          sinceReport = 0;
-          onProgress(received);
-        }
-      }
-      await sink.flush();
-    } finally {
-      await sink.close();
-    }
-
-    if (total != null && received != total) {
-      throw HfDownloadException(
-        'Download of ${target.uri.pathSegments.last} ended early: '
-        'got $received of $total bytes. Try again to resume.',
-      );
-    }
-
-    if (await target.exists()) await target.delete();
-    await partial.rename(target.path);
-    onProgress(received);
+    // We only need the final signed URL. Cancel the response body immediately;
+    // draining a full-file range here would download every model twice.
+    await response.stream.listen((_) {}).cancel();
+    return resolved;
   }
 
   /// Size of a remote file without downloading it, or null if not reported.
@@ -659,30 +672,6 @@ class HuggingFaceService {
       }
     } catch (e) {
       debugPrint('HuggingFaceService: could not size $url: $e');
-    }
-    return null;
-  }
-
-  /// Total size of the file being fetched, in bytes, or null if unknown.
-  int? _totalSize(http.StreamedResponse response, {required int alreadyHave}) {
-    // Hugging Face reports the true size of LFS-backed files in this header,
-    // which is more reliable than Content-Length across the CDN redirect.
-    final linkedSize = int.tryParse(response.headers['x-linked-size'] ?? '');
-    if (linkedSize != null && linkedSize > 0) return linkedSize;
-
-    // For a 206 the range header carries the authoritative total.
-    final contentRange = response.headers['content-range'];
-    if (contentRange != null) {
-      final slash = contentRange.lastIndexOf('/');
-      if (slash != -1) {
-        final parsed = int.tryParse(contentRange.substring(slash + 1));
-        if (parsed != null) return parsed;
-      }
-    }
-
-    final contentLength = response.contentLength;
-    if (contentLength != null && contentLength > 0) {
-      return contentLength + alreadyHave;
     }
     return null;
   }
@@ -734,7 +723,8 @@ class HuggingFaceService {
   static String _randomUrlSafeString(int length) => String.fromCharCodes(
         Iterable.generate(
           length,
-          (_) => _urlSafeChars.codeUnitAt(_random.nextInt(_urlSafeChars.length)),
+          (_) =>
+              _urlSafeChars.codeUnitAt(_random.nextInt(_urlSafeChars.length)),
         ),
       );
 

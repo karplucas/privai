@@ -82,7 +82,7 @@ packages:
     source: hosted
     version: "3.1.0"
   background_downloader:
-    dependency: transitive
+    dependency: "direct main"
     description:
       name: background_downloader
       sha256: "2ea4d638b12690d58ba5f797453f9f9e322bc2848f1f38cfe67aa56ece1ad072"
@@ -239,10 +239,10 @@ packages:
     dependency: "direct main"
     description:
       name: flutter_onnxruntime
-      sha256: "8e1517462cc829d4cafc49702bf11d8a3946be608ca5907d37bf713eb6490231"
+      sha256: "4efb12e04c24ee653b3fbe2bbbf1955367c6c055a0967fb14c0440bf61293db6"
       url: "https://pub.dev"
     source: hosted
-    version: "1.6.1"
+    version: "1.8.3"
   flutter_secure_storage:
     dependency: "direct main"
     description:
@@ -868,6 +868,14 @@ packages:
       url: "https://pub.dev"
     source: hosted
     version: "0.7.11"
+  tiktoken:
+    dependency: "direct main"
+    description:
+      name: tiktoken
+      sha256: a100ca6e387e18be7b711478c8d18627e0753536846600a5961a83631ce5c586
+      url: "https://pub.dev"
+    source: hosted
+    version: "1.0.3"
   typed_data:
     dependency: transitive
     description:
@@ -991,10 +999,9 @@ packages:
   whisper_ggml:
     dependency: "direct main"
     description:
-      name: whisper_ggml
-      sha256: e1e0e1c3ab8f0adf3fa230acebdac1ce39dd79008745efc429a82c5c8ea3a616
-      url: "https://pub.dev"
-    source: hosted
+      path: "third_party/whisper_ggml"
+      relative: true
+    source: path
     version: "2.4.0"
   win32:
     dependency: transitive

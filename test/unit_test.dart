@@ -23,6 +23,8 @@ void main() {
       expect(await settings.ttsEnabled, isTrue);
       expect(await settings.sttEnabled, isTrue);
       expect(await settings.saveChatHistory, isTrue);
+      expect(await settings.keepChatterboxLoaded, isFalse);
+      expect(await settings.omnivoiceRefinementSteps, 12);
     });
 
     test('stored booleans round-trip', () async {
@@ -31,6 +33,11 @@ void main() {
       expect(await settings.ttsEnabled, isFalse);
       await settings.setTtsEnabled(true);
       expect(await settings.ttsEnabled, isTrue);
+
+      await settings.setKeepChatterboxLoaded(true);
+      expect(await settings.keepChatterboxLoaded, isTrue);
+      await settings.setKeepChatterboxLoaded(false);
+      expect(await settings.keepChatterboxLoaded, isFalse);
     });
 
     test('numeric settings are clamped to a usable range', () async {
@@ -41,6 +48,11 @@ void main() {
 
       await settings.setMaxTokens(1);
       expect(await settings.maxTokens, 256);
+
+      await settings.setOmnivoiceRefinementSteps(99);
+      expect(await settings.omnivoiceRefinementSteps, 32);
+      await settings.setOmnivoiceRefinementSteps(1);
+      expect(await settings.omnivoiceRefinementSteps, 5);
     });
 
     test('corrupt numeric values fall back to the default', () async {
@@ -194,8 +206,8 @@ void main() {
       ]);
 
       service.invalidateCache();
-      expect((await service.getConversations()).single.title,
-          'Explain gradients');
+      expect(
+          (await service.getConversations()).single.title, 'Explain gradients');
     });
 
     test('migrates history written to secure storage by older versions',

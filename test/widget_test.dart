@@ -58,6 +58,21 @@ void main() {
       expect(find.byType(TextField), findsOneWidget);
       expect(find.byIcon(Icons.send), findsOneWidget);
       expect(find.byIcon(Icons.mic), findsOneWidget);
+      expect(find.byKey(const ValueKey('voice_mode_button')), findsOneWidget);
+    });
+
+    testWidgets('send button is vertically centered in the input field',
+        (tester) async {
+      await pumpApp(tester);
+
+      final fieldCenter = tester.getCenter(
+        find.byKey(const ValueKey('message_composer')),
+      );
+      final sendCenter = tester.getCenter(
+        find.byKey(const ValueKey('send_message_button')),
+      );
+
+      expect(sendCenter.dy, closeTo(fieldCenter.dy, 0.5));
     });
 
     testWidgets('accepts typed input', (tester) async {
@@ -67,6 +82,41 @@ void main() {
       await tester.pump();
 
       expect(find.text('Hello'), findsOneWidget);
+    });
+
+    testWidgets('composer can reclaim focus after the keyboard is dismissed',
+        (tester) async {
+      await pumpApp(tester);
+      final field = find.byKey(const ValueKey('message_composer'));
+
+      await tester.tap(field);
+      await tester.pump();
+      expect(tester.widget<TextField>(field).focusNode?.hasFocus, isTrue);
+
+      tester.testTextInput.hide();
+      await tester.pump();
+      await tester.tap(field);
+      await tester.pump();
+
+      expect(tester.widget<TextField>(field).focusNode?.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+    });
+
+    testWidgets('composer reconnects its keyboard after app resume',
+        (tester) async {
+      await pumpApp(tester);
+      final field = find.byKey(const ValueKey('message_composer'));
+      await tester.tap(field);
+      await tester.pump();
+      tester.testTextInput.hide();
+
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.inactive);
+      tester.binding.handleAppLifecycleStateChanged(AppLifecycleState.resumed);
+      await tester.pump();
+      await tester.pump();
+
+      expect(tester.widget<TextField>(field).focusNode?.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
     });
 
     testWidgets('shows the empty state before any messages', (tester) async {
@@ -119,16 +169,7 @@ void main() {
       expect(find.text('Settings & models'), findsOneWidget);
     });
 
-    // Deleting used to throw: the history refresh passed setState an arrow
-    // closure, whose value is the assignment's result — the future being
-    // stored — and setState rejects a callback that returns one. The fix is in
-    // ChatScreenState._refreshHistory.
-    //
-    // Skipped: as written this test never completes — something in the seeded
-    // start-up path leaves work pending and the run hangs rather than failing,
-    // which stalls the whole suite. The production fix stands on its own; this
-    // needs the hang diagnosed before it can be trusted.
-    testWidgets('deleting a conversation from the drawer succeeds',
+    testWidgets('deleting the only chat does not create a replacement',
         (tester) async {
       final service = ConversationService()..invalidateCache();
       final conversation = await service.createNewConversation();
@@ -152,6 +193,7 @@ void main() {
 
       expect(tester.takeException(), isNull);
       expect(await service.getConversations(), isEmpty);
-    }, skip: true);
+      expect(find.text('No saved conversations yet.'), findsOneWidget);
+    }, skip: true); // Seeded native startup does not settle in this harness.
   });
 }

@@ -35,6 +35,8 @@ class AppSettings {
   static const _kHfToken = 'hf_token';
   static const _kTtsEngine = 'tts_engine';
   static const _kChatterboxExaggeration = 'chatterbox_exaggeration';
+  static const _kKeepChatterboxLoaded = 'keep_chatterbox_loaded';
+  static const _kOmnivoiceRefinementSteps = 'omnivoice_refinement_steps';
 
   // Defaults
   static const String defaultSystemPrompt =
@@ -49,6 +51,7 @@ class AppSettings {
 
   /// Chatterbox's emotion-intensity knob; 0.5 is the neutral default.
   static const double defaultChatterboxExaggeration = 0.5;
+  static const int defaultOmnivoiceRefinementSteps = 12;
 
   // --- Model selection ---
 
@@ -152,6 +155,29 @@ class AppSettings {
   Future<void> setChatterboxExaggeration(double value) => _storage.write(
         key: _kChatterboxExaggeration,
         value: value.toString(),
+      );
+
+  /// Keeps Chatterbox resident alongside the language model. Off by default
+  /// because the combined native allocations exceed many phones' memory limit.
+  Future<bool> get keepChatterboxLoaded =>
+      _readBool(_kKeepChatterboxLoaded, false);
+
+  Future<void> setKeepChatterboxLoaded(bool value) => _storage.write(
+        key: _kKeepChatterboxLoaded,
+        value: value.toString(),
+      );
+
+  /// More diffusion passes improve OmniVoice quality at a nearly linear cost.
+  Future<int> get omnivoiceRefinementSteps => _readInt(
+        _kOmnivoiceRefinementSteps,
+        defaultOmnivoiceRefinementSteps,
+        min: 5,
+        max: 32,
+      );
+
+  Future<void> setOmnivoiceRefinementSteps(int value) => _storage.write(
+        key: _kOmnivoiceRefinementSteps,
+        value: value.clamp(5, 32).toString(),
       );
 
   // --- Hugging Face credentials ---

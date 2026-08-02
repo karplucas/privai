@@ -89,6 +89,43 @@ void main() {
     expect(find.byType(CircularProgressIndicator), findsNothing);
   });
 
+  testWidgets('an idle model stream closes after producing partial text',
+      (tester) async {
+    final controller = StreamController<String>();
+    LlmService().debugResponseStream = (_) => controller.stream;
+
+    await pumpApp(tester);
+    await send(tester, 'Are you working?');
+    controller.add('Yes I work');
+    await settleEvent(tester);
+    expect(find.text('Yes I work'), findsOneWidget);
+
+    await tester.pump(const Duration(seconds: 9));
+    await tester.pump();
+
+    expect(find.text('Yes I work'), findsOneWidget);
+    expect(find.text('Stop generating'), findsNothing);
+    unawaited(controller.close());
+  });
+
+  testWidgets('composer remains focusable while a response is streaming',
+      (tester) async {
+    final controller = StreamController<String>();
+    LlmService().debugResponseStream = (_) => controller.stream;
+
+    await pumpApp(tester);
+    await send(tester, 'hi');
+
+    final field = find.byKey(const ValueKey('message_composer'));
+    expect(tester.widget<TextField>(field).enabled, isNot(false));
+    await tester.tap(field);
+    await tester.pump();
+    expect(tester.widget<TextField>(field).focusNode?.hasFocus, isTrue);
+
+    await controller.close();
+    await settleEvent(tester);
+  });
+
   testWidgets('the user message appears before any token arrives',
       (tester) async {
     final controller = StreamController<String>();
@@ -150,7 +187,8 @@ void main() {
     await tester.pump(const Duration(milliseconds: 20));
     await settleEvent(tester);
 
-    expect(generatorClosed, isTrue, reason: 'the model stream must be cancelled');
+    expect(generatorClosed, isTrue,
+        reason: 'the model stream must be cancelled');
     expect(find.textContaining('Partial answer'), findsOneWidget);
     expect(find.text('Stop generating'), findsNothing);
   });

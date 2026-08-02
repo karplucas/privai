@@ -2,6 +2,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:privai/models/model_spec.dart';
 import 'package:privai/services/tts_engine.dart';
 import 'package:privai/services/chatterbox_tts_service.dart';
+import 'package:privai/services/omnivoice_tts_service.dart';
 import 'package:privai/services/model_catalog.dart';
 
 void main() {
@@ -119,13 +120,8 @@ void main() {
       expect(catalog.byKind(ModelKind.llm), isNotEmpty);
     });
 
-    // Gemma 3 and 3n ship under the Gemma Terms of Use, which Hugging Face
-    // enforces per account, so those entries have to carry the gate. Gemma 4 is
-    // Apache-2.0 and its litert-community repositories are not gated, so
-    // requiring the gate of every Gemma would force users through a licence
-    // acceptance that does not exist. What every entry does owe the user is a
-    // named licence, and every gated one an explanation of what it is agreeing
-    // to.
+    // Every listed Gemma model owes the user a named licence, and every gated
+    // one an explanation of what the user is agreeing to.
     test('names a license for every Gemma model, and explains the gated ones',
         () {
       final gemmas = catalog.models.where(
@@ -149,21 +145,9 @@ void main() {
       }
     });
 
-    test('the Gemma models still under the Terms of Use keep their gate', () {
-      // Losing the gate on these would mean downloads that fail with a bare 403
-      // instead of walking the user through accepting Google's terms.
-      final gated = catalog.models.where(
-        (m) => m.license == 'Gemma Terms of Use',
-      );
-
-      expect(gated, isNotEmpty);
-      for (final model in gated) {
-        expect(
-          model.gated,
-          isTrue,
-          reason: '${model.repo} must go through the license gate',
-        );
-      }
+    test('does not ship Gemma 3 or Gemma 3n models', () {
+      final names = catalog.byKind(ModelKind.llm).map((m) => m.name).toList();
+      expect(names, everyElement(startsWith('Gemma 4')));
     });
 
     test('every entry resolves to an https URL on a known host', () {
@@ -190,9 +174,8 @@ void main() {
       // output, and the package casts each element straight to double, so
       // synthesis died with "type 'Float32List' is not a subtype of type
       // 'double'". Only this release asset produces a flat float array.
-      final kokoro = catalog
-          .byKind(ModelKind.tts)
-          .firstWhere((m) => m.engine == 'kokoro');
+      final kokoro =
+          catalog.byKind(ModelKind.tts).firstWhere((m) => m.engine == 'kokoro');
 
       expect(kokoro.downloadUrl.toString(), contains('kokoro-v1.0.onnx'));
       expect(kokoro.downloadUrl.toString(), contains('model-files-v1.0'));
@@ -215,42 +198,39 @@ void main() {
           .byKind(ModelKind.tts)
           .firstWhere((m) => m.engine == 'chatterbox');
 
+      expect(
+        chatterbox.repo,
+        'owensong/chatterbox-nano-ONNX',
+      );
+      expect(chatterbox.revision, hasLength(40));
+      expect(chatterbox.size, '570MB');
       expect(chatterbox.isBundle, isTrue);
       expect(chatterbox.bundleDirectory, isNotNull);
 
       final names = chatterbox.files.map((f) => f.name).toList();
       for (final required in const [
-        'embed_tokens.onnx',
-        'language_model_q4.onnx',
-        'speech_encoder.onnx',
-        'conditional_decoder.onnx',
+        'embed_tokens_fp16.onnx',
+        'embed_tokens_fp16.onnx_data',
+        'language_model_q4f16.onnx',
+        'language_model_q4f16.onnx_data',
+        'speech_encoder_q4f16.onnx',
+        'speech_encoder_q4f16.onnx_data',
+        'conditional_decoder_q4.onnx',
+        'conditional_decoder_q4.onnx_data',
         'tokenizer.json',
+        'default_voice.wav',
       ]) {
         expect(names, contains(required));
       }
 
-      // Each graph must be accompanied by the sidecar it names internally,
-      // under exactly that filename, or ONNX Runtime cannot find its weights.
-      for (final stem in const [
-        'embed_tokens',
-        'language_model_q4',
-        'speech_encoder',
-        'conditional_decoder',
-      ]) {
-        expect(names, contains('$stem.onnx'));
-        expect(
-          names,
-          contains('$stem.onnx_data'),
-          reason: 'the sidecar must sit beside $stem.onnx',
-        );
-      }
+      expect(names.where((name) => name.endsWith('.onnx')), hasLength(4));
+      expect(names.where((name) => name.endsWith('.onnx_data')), hasLength(4),
+          reason: 'each Nano graph has an external weight sidecar');
     });
 
     test('the catalog ships the exact graphs ChatterboxTtsService loads', () {
       // Regression: the service and the catalog disagreed on which language
-      // model export to use. It also has to be the float32-KV one, because
-      // OrtValue.fromList cannot build the float16 cache tensors the q4f16
-      // export requires on its first pass.
+      // model export to use.
       final chatterbox = catalog
           .byKind(ModelKind.tts)
           .firstWhere((m) => m.engine == 'chatterbox');
@@ -268,9 +248,60 @@ void main() {
             reason: 'the service loads $graph but the catalog omits it');
       }
 
-      expect(ChatterboxTtsService.languageGraph, isNot(contains('f16')),
-          reason: 'a float16 KV cache cannot be created from Dart');
       expect(chatterbox.bundleDirectory, ChatterboxTtsService.bundleName);
+    });
+
+    test('OmniVoice ships the hybrid automatic-voice pipeline', () {
+      final omnivoice = catalog
+          .byKind(ModelKind.tts)
+          .firstWhere((m) => m.engine == 'omnivoice');
+      final names = omnivoice.files.map((f) => f.name).toSet();
+
+      expect(omnivoice.repo, 'dellusional/OmniVoice-ONNX-bidirectional');
+      expect(omnivoice.revision, hasLength(40));
+      expect(omnivoice.size, '2.16GB');
+      expect(omnivoice.bundleDirectory, OmniVoiceTtsService.bundleName);
+      for (final required in const [
+        OmniVoiceTtsService.audioEmbeddingsGraph,
+        OmniVoiceTtsService.audioHeadsGraph,
+        OmniVoiceTtsService.llmGraph,
+        OmniVoiceTtsService.decoderGraph,
+        OmniVoiceTtsService.tokenizerFile,
+        'audio_embeddings_encoder.onnx.data',
+        'llm_backbone_fp32.onnx.data',
+        'higgs_decoder.onnx.data',
+        'model_config.json',
+      ]) {
+        expect(names, contains(required));
+      }
+      expect(
+        omnivoice.files
+            .firstWhere(
+                (file) => file.name == OmniVoiceTtsService.audioEmbeddingsGraph)
+            .pathInRepo,
+        OmniVoiceTtsService.audioEmbeddingsGraph,
+        reason: 'the INT4 audio embedding graph produces tonal codec output',
+      );
+      final backbone = omnivoice.files
+          .firstWhere((file) => file.name == OmniVoiceTtsService.llmGraph);
+      expect(backbone.repo, isNull,
+          reason: 'the backbone comes from the corrected primary repository');
+      expect(omnivoice.urlFor(backbone).host, 'huggingface.co');
+      expect(omnivoice.urlFor(backbone).path,
+          contains('dellusional/OmniVoice-ONNX-bidirectional'));
+      final embeddings = omnivoice.files.firstWhere(
+          (file) => file.name == OmniVoiceTtsService.audioEmbeddingsGraph);
+      expect(embeddings.repo, 'onnx-community/OmniVoice-Onnx');
+      expect(omnivoice.urlFor(embeddings).path,
+          contains('onnx-community/OmniVoice-Onnx'));
+      expect(
+        omnivoice.files
+            .firstWhere(
+                (file) => file.name == OmniVoiceTtsService.audioHeadsGraph)
+            .pathInRepo,
+        OmniVoiceTtsService.audioHeadsGraph,
+        reason: 'the INT4 audio heads produce tonal codec output',
+      );
     });
 
     test('a bundle stands for a real file, not its directory name', () {
@@ -297,14 +328,13 @@ void main() {
       );
     });
 
-    test('bundle files keep their basenames so sidecars resolve', () {
+    test('bundle files keep their repository basenames', () {
       final chatterbox = catalog
           .byKind(ModelKind.tts)
           .firstWhere((m) => m.engine == 'chatterbox');
 
       for (final file in chatterbox.files) {
-        expect(file.name, file.pathInRepo.split('/').last,
-            reason: 'renaming would break the reference inside the graph');
+        expect(file.name, file.pathInRepo.split('/').last);
         expect(
           chatterbox.urlFor(file).toString(),
           contains(file.pathInRepo),

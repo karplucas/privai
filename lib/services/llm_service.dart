@@ -56,6 +56,11 @@ class LlmService {
   @visibleForTesting
   Stream<String> Function(String prompt)? debugResponseStream;
 
+  /// Whether generation is supplied by the test seam rather than a real LLM.
+  /// Voice synthesis is skipped in this mode so widget tests never initialize
+  /// native audio/model plugins.
+  bool get isUsingDebugResponse => debugResponseStream != null;
+
   /// True once a chat session exists and can answer prompts.
   bool get isReady => _chat != null || debugResponseStream != null;
 
@@ -72,7 +77,8 @@ class LlmService {
   /// package registers none of them, and an unregistered format fails at
   /// [FlutterGemma.getActiveModel] rather than at install. The registry routes
   /// each model by file type — .litertlm to LiteRT-LM, .task/.bin to MediaPipe.
-  Future<void> _ensurePluginInitialized() => _pluginInit ??= FlutterGemma.initialize(
+  Future<void> _ensurePluginInitialized() =>
+      _pluginInit ??= FlutterGemma.initialize(
         inferenceEngines: const [LiteRtLmEngine(), MediaPipeEngine()],
       );
 

@@ -49,6 +49,8 @@ class _ModelsPageState extends State<ModelsPage> {
   bool _ttsEnabled = true;
   bool _sttEnabled = true;
   bool _saveChatHistory = true;
+  bool _keepChatterboxLoaded = false;
+  int _omnivoiceRefinementSteps = AppSettings.defaultOmnivoiceRefinementSteps;
 
   TtsEngineKind _ttsEngineKind = TtsEngineKind.kokoro;
   String _ttsVoice = AppSettings.defaultTtsVoice;
@@ -169,6 +171,8 @@ class _ModelsPageState extends State<ModelsPage> {
       final ttsEnabled = await _settings.ttsEnabled;
       final sttEnabled = await _settings.sttEnabled;
       final saveChatHistory = await _settings.saveChatHistory;
+      final keepChatterboxLoaded = await _settings.keepChatterboxLoaded;
+      final omnivoiceRefinementSteps = await _settings.omnivoiceRefinementSteps;
 
       final ttsEngineKind = await _settings.ttsEngine;
       final ttsVoice = await _settings.ttsVoice;
@@ -196,6 +200,8 @@ class _ModelsPageState extends State<ModelsPage> {
         _ttsEnabled = ttsEnabled;
         _sttEnabled = sttEnabled;
         _saveChatHistory = saveChatHistory;
+        _keepChatterboxLoaded = keepChatterboxLoaded;
+        _omnivoiceRefinementSteps = omnivoiceRefinementSteps;
         _ttsEngineKind = ttsEngineKind;
         _ttsVoice = ttsVoice;
         _ttsLanguage = ttsLanguage;
@@ -253,7 +259,12 @@ class _ModelsPageState extends State<ModelsPage> {
     // previously offered voices the model does not actually contain.
     List<String> voices;
     try {
-      voices = await (await TtsRouter().activeEngine()).availableVoices();
+      final engine = await TtsRouter().activeEngine();
+      // Merely opening Settings must not load a dormant multi-gigabyte TTS
+      // engine beside the current LLM. Voice choices appear once that engine
+      // has been initialized by normal use or warm-up.
+      if (!engine.isInitialized) return;
+      voices = await engine.availableVoices();
     } catch (e) {
       debugPrint('ModelsPage: could not list voices: $e');
       return;
@@ -854,11 +865,52 @@ class _ModelsPageState extends State<ModelsPage> {
             ],
           ),
         ),
+        if (_ttsEngineKind == TtsEngineKind.chatterbox)
+          SwitchListTile(
+            title: const Text('Keep Chatterbox loaded'),
+            subtitle: const Text(
+              'Keep it in memory with the language model for faster speech. '
+              'Use only with a small LLM on a high-memory device.',
+            ),
+            value: _keepChatterboxLoaded,
+            onChanged: (value) async {
+              await _settings.setKeepChatterboxLoaded(value);
+              if (!mounted) return;
+              setState(() {
+                _keepChatterboxLoaded = value;
+                _needsReload = true;
+              });
+            },
+          ),
+        if (_ttsEngineKind == TtsEngineKind.omnivoice)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: DropdownButtonFormField<int>(
+              initialValue: _omnivoiceRefinementSteps,
+              decoration: const InputDecoration(
+                labelText: 'Refinement steps',
+                helperText: 'More steps improve quality but take longer',
+              ),
+              items: const [5, 8, 12, 16, 24, 32]
+                  .map((steps) => DropdownMenuItem(
+                        value: steps,
+                        child: Text('$steps steps'),
+                      ))
+                  .toList(),
+              onChanged: (value) async {
+                if (value == null) return;
+                await _settings.setOmnivoiceRefinementSteps(value);
+                if (!mounted) return;
+                setState(() => _omnivoiceRefinementSteps = value);
+              },
+            ),
+          ),
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
           child: Column(
             children: [
               DropdownButtonFormField<String>(
+                menuMaxHeight: 360,
                 initialValue:
                     catalog.ttsLanguages.any((l) => l.code == _ttsLanguage)
                         ? _ttsLanguage

@@ -1,239 +1,61 @@
-import 'dart:convert';
-import 'dart:io';
-
 import 'package:flutter_test/flutter_test.dart';
 import 'package:privai/services/chatterbox_tokenizer.dart';
-import 'package:privai/services/chatterbox_tts_service.dart';
 
-/// Runs against the real `tokenizer.json` from
-/// onnx-community/chatterbox-multilingual-ONNX, checked in as a fixture so these
-/// do not need the network.
 void main() {
   late ChatterboxTokenizer tokenizer;
 
-  setUpAll(() async {
-    final raw =
-        await File('test/fixtures/chatterbox_tokenizer.json').readAsString();
-    tokenizer = ChatterboxTokenizer.fromJson(
-      json.decode(raw) as Map<String, dynamic>,
-    );
-  });
-
-  test('parses the real vocabulary and merge table', () {
-    expect(tokenizer.vocabSize, 2454);
-    expect(tokenizer.hasToken('[STOP]'), isTrue);
-    expect(tokenizer.hasToken('[START]'), isTrue);
-    expect(tokenizer.hasToken('[SPACE]'), isTrue);
-  });
-
-  test('special token ids match generation_config', () {
-    // generation_config.json: bos_token_id 1, eos_token_id [2, 6562].
-    expect(tokenizer.startId, isNonNegative);
-    expect(tokenizer.stopId, isNonNegative);
-    expect(tokenizer.startId, isNot(tokenizer.stopId));
-  });
-
-  test('wraps encodings in the post-processor template', () {
-    // <EXAGGERATION> <s> …text… </s> <START_SPEECH> <START_SPEECH>
-    expect(tokenizer.exaggerationId, 6563);
-    expect(tokenizer.startId, 255);
-    expect(tokenizer.stopId, 0);
-    expect(tokenizer.startSpeechId, 6561);
-
-    final ids = tokenizer.encode('hello');
-    expect(ids.take(2), [6563, 255]);
-    expect(ids.skip(ids.length - 3), [0, 6561, 6561]);
-  });
-
-  /// Expected ids produced by Hugging Face `tokenizers` against this same
-  /// `tokenizer.json`. The trailing `<START_SPEECH>` pair is what puts the
-  /// language model into speech generation; without it the model continues
-  /// text, never emits end-of-speech, and the audio is a drone.
-  test('matches the reference tokenizer id for id', () {
-    const expected = {
-      '[en]Okay.': [6563, 255, 708, 291, 24, 88, 9, 0, 6561, 6561],
-      'hello world': [6563, 255, 62, 84, 28, 2, 179, 79, 0, 6561, 6561],
-      'the quick brown fox': [
-        6563,
-        255,
-        42,
-        2,
-        194,
-        91,
-        24,
-        2,
-        243,
-        190,
-        2,
-        182,
-        37,
-        0,
-        6561,
-        6561,
+  setUpAll(() {
+    final byteEncoder = _gpt2ByteEncoder();
+    tokenizer = ChatterboxTokenizer.fromJson({
+      'model': {
+        'type': 'BPE',
+        'vocab': {
+          for (var byte = 0; byte < 256; byte++)
+            String.fromCharCode(byteEncoder[byte]!): byte,
+          '<|endoftext|>': 50256,
+        },
+        'merges': <String>[],
+      },
+      'added_tokens': [
+        {
+          'id': 50256,
+          'content': '<|endoftext|>',
+          'special': true,
+        },
+        {'id': 50275, 'content': '[laugh]', 'special': true},
       ],
-      'Hola, ¿cómo estás?': [
-        6563,
-        255,
-        284,
-        28,
-        25,
-        14,
-        7,
-        2,
-        360,
-        16,
-        412,
-        115,
-        2,
-        218,
-        394,
-        32,
-        13,
-        0,
-        6561,
-        6561,
-      ],
-      '[laughter] hi': [6563, 255, 607, 2, 21, 22, 0, 6561, 6561],
-      'a b c 1 2 3 !?': [
-        6563,
-        255,
-        14,
-        2,
-        15,
-        2,
-        16,
-        2,
-        264,
-        2,
-        265,
-        2,
-        266,
-        2,
-        3,
-        13,
-        0,
-        6561,
-        6561,
-      ],
-      '日本語': [6563, 255, 1, 1, 1, 0, 6561, 6561],
-      // An unknown bracketed token is punctuation, not a special.
-      '[foo] x': [6563, 255, 303, 182, 28, 305, 2, 37, 0, 6561, 6561],
-      '': [6563, 255, 0, 6561, 6561],
-    };
-
-    expected.forEach((text, ids) {
-      expect(tokenizer.encode(text), ids, reason: 'encoding "$text"');
     });
   });
 
-  test('emits one space token per space, without collapsing runs', () {
-    // The normalizer replaces each literal space with [SPACE]; three spaces are
-    // three tokens, and leading and trailing spaces survive.
-    expect(
-      tokenizer.encode('hello   world', addSpecialTokens: false),
-      [62, 84, 28, 2, 2, 2, 179, 79],
-    );
-    expect(
-      tokenizer.encode(' hello ', addSpecialTokens: false),
-      [2, 62, 84, 28, 2],
-    );
+  test('uses GPT-2 byte-level tokens and appends two end markers', () {
+    final ids = tokenizer.encode('Hi');
+    expect(ids.take(2), [72, 105]);
+    expect(ids.skip(ids.length - 2), [50256, 50256]);
   });
 
-  test('omits special tokens when asked', () {
-    final ids = tokenizer.encode('hello', addSpecialTokens: false);
-    expect(ids, isNot(contains(tokenizer.startId)));
-    expect(ids, isNot(contains(tokenizer.stopId)));
+  test('recognises Nano performance tags as atomic special tokens', () {
+    final ids = tokenizer.encode('[laugh] Hi');
+    expect(ids.first, 50275);
+    expect(ids.where((id) => id == 50275), hasLength(1));
   });
 
-  test('separates words with the space token', () {
-    final one = tokenizer.encode('hello', addSpecialTokens: false);
-    final two = tokenizer.encode('hello hello', addSpecialTokens: false);
-
-    expect(tokenizer.spaceId, isNotNull);
-    expect(two.length, one.length * 2 + 1);
-    expect(two[one.length], tokenizer.spaceId);
+  test('can omit the post-processor end markers', () {
+    expect(tokenizer.encode('Hi', addSpecialTokens: false), [72, 105]);
   });
+}
 
-  test('keeps bracketed special tokens atomic', () {
-    final ids = tokenizer.encode('[laughter]', addSpecialTokens: false);
-    expect(ids, hasLength(1), reason: 'must not be split into characters');
-  });
-
-  test('round-trips simple text through decode', () {
-    const text = 'the quick brown fox';
-    expect(tokenizer.decode(tokenizer.encode(text)), text);
-  });
-
-  test('never emits an id outside the vocabulary', () {
-    const samples = [
-      'hello world',
-      'Hola, ¿cómo estás?',
-      'a b c 1 2 3 !?',
-      'ZZZZ unpronounceable qqxz',
-      '',
-    ];
-    for (final sample in samples) {
-      // Only the body: the template's <EXAGGERATION> and <START_SPEECH> ids
-      // deliberately address the language model's speech range, above the
-      // text vocabulary.
-      for (final id in tokenizer.encode(sample, addSpecialTokens: false)) {
-        expect(id, inInclusiveRange(0, tokenizer.vocabSize - 1),
-            reason: 'id out of range for "$sample"');
-      }
-    }
-  });
-
-  test('maps unknown characters to the unknown token, not a crash', () {
-    final ids = tokenizer.encode('日本語', addSpecialTokens: false);
-    expect(ids, isNotEmpty);
-    expect(ids.every((id) => id >= 0), isTrue);
-  });
-
-  test('an empty string yields just the template', () {
-    expect(tokenizer.encode(''), [6563, 255, 0, 6561, 6561]);
-  });
-
-  test('preserves case, because the vocabulary is case-sensitive', () {
-    // The shipped normalizer is a Replace of " " with "[SPACE]", not a
-    // Lowercase, and the vocab contains uppercase letters. Folding case here
-    // would pick tokens the model was not trained on.
-    expect(
-      tokenizer.encode('HELLO', addSpecialTokens: false),
-      isNot(tokenizer.encode('hello', addSpecialTokens: false)),
-    );
-    expect(tokenizer.hasToken('A'), isTrue);
-  });
-
-  test('applies BPE merges rather than one id per character', () {
-    // 265 merges exist, so a common word should compress below its length.
-    final ids = tokenizer.encode('the', addSpecialTokens: false);
-    expect(ids.length, lessThanOrEqualTo(3));
-  });
-
-  group('speech token budget', () {
-    test('short replies no longer generate the full thirty seconds', () {
-      expect(ChatterboxTtsService.tokenBudgetForText('Okay.'), 75);
-      expect(
-        ChatterboxTtsService.tokenBudgetForText(
-          'This is a normal short reply that should finish promptly.',
-        ),
-        lessThan(300),
-      );
-    });
-
-    test('long replies retain the absolute safety ceiling', () {
-      final longReply = List.filled(500, 'word').join(' ');
-      expect(
-        ChatterboxTtsService.tokenBudgetForText(longReply),
-        ChatterboxTtsService.maxSeconds * ChatterboxTtsService.tokenRateHz,
-      );
-    });
-
-    test('text without spaces still receives a useful budget', () {
-      expect(
-        ChatterboxTtsService.tokenBudgetForText('這是一段沒有空格但需要語音合成的文字'),
-        greaterThan(75),
-      );
-    });
-  });
+Map<int, int> _gpt2ByteEncoder() {
+  final bytes = <int>[
+    ...List.generate(94, (i) => i + 33),
+    ...List.generate(12, (i) => i + 161),
+    ...List.generate(82, (i) => i + 174),
+  ];
+  final codepoints = [...bytes];
+  var extra = 0;
+  for (var byte = 0; byte < 256; byte++) {
+    if (bytes.contains(byte)) continue;
+    bytes.add(byte);
+    codepoints.add(256 + extra++);
+  }
+  return {for (var i = 0; i < bytes.length; i++) bytes[i]: codepoints[i]};
 }

@@ -33,7 +33,10 @@ class WhisperService {
   final ModelStorage _storage = ModelStorage();
 
   WhisperModel? _activeModel;
+  String? _activeFilename;
   Future<void>? _initialization;
+  bool _isTranscribing = false;
+  bool _recordingTransition = false;
 
   bool get isReady => _activeModel != null;
 
@@ -41,8 +44,25 @@ class WhisperService {
   ///
   /// The previous implementation returned early while initialisation was still
   /// running, so a caller could proceed as though the model were loaded.
-  Future<void> initialize({bool force = false}) {
-    if (force) _initialization = null;
+  Future<void> initialize({bool force = false}) async {
+    final selected = await _settings.selectedSttModel;
+    final selectionChanged = selected != _activeFilename;
+    if (force || selectionChanged) {
+      // Never start a second import while the first one is still copying the
+      // model. Competing writes can leave whisper.cpp with a truncated GGML
+      // file, which is a native-process crash rather than a Dart exception.
+      final inFlight = _initialization;
+      if (inFlight != null) {
+        try {
+          await inFlight;
+        } catch (_) {
+          // The fresh attempt below reports its own useful error.
+        }
+      }
+      _initialization = null;
+      _activeModel = null;
+      _activeFilename = null;
+    }
     return _initialization ??= _initialize();
   }
 
@@ -61,17 +81,31 @@ class WhisperService {
       // downloaded file is there but the plugin's is not, hand it over instead
       // of downloading the same weights a second time.
       final pluginFile = File(await _whisperController.getPath(model));
-      if (!await pluginFile.exists()) {
-        final downloaded = File(await _storage.pathFor(filename));
-        if (await downloaded.exists()) {
+      final downloaded = File(await _storage.pathFor(filename));
+      final hasDownloaded = await downloaded.exists();
+      final pluginIsComplete = await pluginFile.exists() &&
+          (!hasDownloaded ||
+              await pluginFile.length() == await downloaded.length());
+      if (!pluginIsComplete) {
+        if (hasDownloaded) {
           debugPrint('WhisperService: importing $filename into plugin storage');
           await pluginFile.parent.create(recursive: true);
-          final sink = pluginFile.openWrite();
+          final importing = File('${pluginFile.path}.importing');
+          if (await importing.exists()) await importing.delete();
+          final sink = importing.openWrite();
           try {
             await sink.addStream(downloaded.openRead());
           } finally {
             await sink.close();
           }
+          if (await importing.length() != await downloaded.length()) {
+            await importing.delete();
+            throw const WhisperNotReadyException(
+              'The speech-to-text model could not be copied completely.',
+            );
+          }
+          if (await pluginFile.exists()) await pluginFile.delete();
+          await importing.rename(pluginFile.path);
         } else {
           throw WhisperNotReadyException(
             'The speech-to-text model "$filename" has not been downloaded yet. '
@@ -81,10 +115,12 @@ class WhisperService {
       }
 
       _activeModel = model;
+      _activeFilename = filename;
       debugPrint('WhisperService: ready with ${model.name}');
     } catch (e) {
       // Allow a later attempt to retry rather than caching the failure.
       _activeModel = null;
+      _activeFilename = null;
       _initialization = null;
       debugPrint('WhisperService: initialisation failed: $e');
       rethrow;
@@ -105,7 +141,40 @@ class WhisperService {
   /// When [language] is omitted the user's configured STT language is used —
   /// previously that setting was stored but never reached this call, so every
   /// transcription ran in auto-detect mode.
-  Future<String> transcribeFromFile(String audioPath, {String? language}) async {
+  Future<String> transcribeFromFile(String audioPath,
+      {String? language}) async {
+    if (_isTranscribing) {
+      throw const WhisperNotReadyException(
+        'A transcription is already in progress.',
+      );
+    }
+    _isTranscribing = true;
+    try {
+      final text = await _transcribeFromFile(audioPath, language: language);
+      debugPrint('WhisperService: native transcription completed');
+      return sanitizeTranscription(text);
+    } finally {
+      _isTranscribing = false;
+    }
+  }
+
+  /// Whisper uses bracketed or parenthesized annotations for non-speech audio,
+  /// such as `[BLANK_AUDIO]`, `[music]`, and `(silence)`. They are not user
+  /// messages.
+  @visibleForTesting
+  static String sanitizeTranscription(String text) {
+    final trimmed = text.trim();
+    final isAnnotation = (trimmed.startsWith('[') && trimmed.endsWith(']')) ||
+        (trimmed.startsWith('(') && trimmed.endsWith(')'));
+    if (isAnnotation) {
+      debugPrint('WhisperService: discarded audio annotation');
+      return '';
+    }
+    return trimmed;
+  }
+
+  Future<String> _transcribeFromFile(String audioPath,
+      {String? language}) async {
     await initialize();
     final model = _activeModel;
     if (model == null) {
@@ -133,8 +202,13 @@ class WhisperService {
       transcribeRequest: TranscribeRequest(
         audio: audioPath,
         language: language ?? await _settings.sttLanguage,
+        // Six workers is the plugin default. Two reduces per-thread scratch
+        // allocations substantially on memory-constrained iPhones.
+        threads: 2,
         isNoTimestamps: true,
-        isRealtime: true,
+        // This is a finalized file; realtime mode is reserved for the
+        // plugin's streaming API and must not be mixed with file requests.
+        isRealtime: false,
       ),
       modelPath: modelPath,
     );
@@ -145,6 +219,20 @@ class WhisperService {
   /// Starts recording 16 kHz mono WAV, the format whisper.cpp consumes
   /// directly.
   Future<String> startRecording() async {
+    if (_recordingTransition || await _audioRecorder.isRecording()) {
+      throw const WhisperNotReadyException(
+        'The microphone is already recording.',
+      );
+    }
+    _recordingTransition = true;
+    try {
+      return await _startRecording();
+    } finally {
+      _recordingTransition = false;
+    }
+  }
+
+  Future<String> _startRecording() async {
     if (!await _audioRecorder.hasPermission()) {
       throw const WhisperNotReadyException(
         'Microphone permission is required to record.',
@@ -169,7 +257,18 @@ class WhisperService {
   /// Stops recording and returns the file path, or null if nothing usable was
   /// captured.
   Future<String?> stopRecording() async {
-    final path = await _audioRecorder.stop();
+    if (_recordingTransition) {
+      throw const WhisperNotReadyException(
+        'The microphone is still changing state.',
+      );
+    }
+    _recordingTransition = true;
+    String? path;
+    try {
+      path = await _audioRecorder.stop();
+    } finally {
+      _recordingTransition = false;
+    }
     if (path == null) return null;
 
     final file = File(path);
@@ -189,6 +288,10 @@ class WhisperService {
   }
 
   Future<bool> get isRecording => _audioRecorder.isRecording();
+
+  /// Current microphone level in dBFS for hands-free end-of-turn detection.
+  Future<double> get currentAmplitudeDb async =>
+      (await _audioRecorder.getAmplitude()).current;
 
   /// Releases the recorder. Only call when the app is shutting down — this is a
   /// singleton shared across screens.
