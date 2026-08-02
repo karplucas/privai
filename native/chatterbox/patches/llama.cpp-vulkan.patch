@@ -1,0 +1,121 @@
+# Applies to vendor/codec.cpp/common/third-party/llama.cpp.
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index c0ab9f1..320e4d2 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -983,6 +983,10 @@ struct vk_device_struct {
+     ~vk_device_struct() {
+         VK_LOG_DEBUG("destroy device " << name);
+ 
++        if (!device) {
++            return;
++        }
++
+         device.destroyFence(fence);
+ 
+         ggml_vk_destroy_buffer(sync_staging);
+@@ -5748,10 +5752,12 @@ static uint32_t ggml_vk_intel_shader_core_count(const vk::PhysicalDevice& vkdev)
+ static vk_device ggml_vk_get_device(size_t idx) {
+     VK_LOG_DEBUG("ggml_vk_get_device(" << idx << ")");
+ 
++    static std::mutex mutex;
++    std::lock_guard<std::mutex> lock(mutex);
++
+     if (vk_instance.devices[idx] == nullptr) {
+         VK_LOG_DEBUG("Initializing new vk_device");
+         vk_device device = std::make_shared<vk_device_struct>();
+-        vk_instance.devices[idx] = device;
+ 
+         device->memory_logger = std::unique_ptr<vk_memory_logger>(new vk_memory_logger());
+ 
+@@ -6334,7 +6340,15 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             throw std::runtime_error("Unsupported device");
+         }
+ 
+-        device_extensions.push_back("VK_KHR_16bit_storage");
++        // Promoted to core in Vulkan 1.1. A 1.1+ driver may therefore support
++        // the feature — checked just above via storageBuffer16BitAccess —
++        // without advertising the extension string, and asking for an
++        // extension the device does not advertise fails createDevice with
++        // ErrorExtensionNotPresent. Only request it when it is really an
++        // extension here.
++        if (fp16_storage) {
++            device_extensions.push_back("VK_KHR_16bit_storage");
++        }
+ 
+ #ifdef GGML_VULKAN_VALIDATE
+         device_extensions.push_back("VK_KHR_shader_non_semantic_info");
+@@ -6571,14 +6585,14 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             device->async_use_transfer_queue = false;
+         }
+ 
++        device->fence = device->device.createFence({});
++
+         device->buffer_type = {
+             /* .iface    = */ ggml_backend_vk_buffer_type_interface,
+             /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), idx),
+             /* .context  = */ new ggml_backend_vk_buffer_type_context{ device->name, device },
+         };
+ 
+-        device->fence = device->device.createFence({});
+-
+         device->idx = idx;
+ 
+         device->disable_fusion = getenv("GGML_VK_DISABLE_FUSION") != nullptr;
+@@ -6596,6 +6610,7 @@ static vk_device ggml_vk_get_device(size_t idx) {
+             device->mmvq_mode = 1;
+         }
+ 
++        vk_instance.devices[idx] = device;
+         return device;
+     }
+ 
+@@ -7074,14 +7089,22 @@ static void ggml_vk_instance_init() {
+     }
+ }
+ 
+-static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
++static bool ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
+     VK_LOG_DEBUG("ggml_vk_init(" << ctx->name << ", " << idx << ")");
+-    ggml_vk_instance_init();
+-    GGML_ASSERT(idx < vk_instance.device_indices.size());
+ 
+-    ctx->name = GGML_VK_NAME + std::to_string(idx);
++    try {
++        ggml_vk_instance_init();
++        if (idx >= vk_instance.device_indices.size()) {
++            GGML_LOG_WARN("ggml_vulkan: Device index %zu is out of range\n", idx);
++            return false;
++        }
+ 
+-    ctx->device = ggml_vk_get_device(idx);
++        ctx->name = GGML_VK_NAME + std::to_string(idx);
++        ctx->device = ggml_vk_get_device(idx);
++    } catch (const std::exception & e) {
++        GGML_LOG_WARN("ggml_vulkan: Failed to initialize device %zu: %s\n", idx, e.what());
++        return false;
++    }
+ 
+     ctx->semaphore_idx = 0;
+     ctx->event_idx = 0;
+@@ -7116,6 +7139,8 @@ static void ggml_vk_init(ggml_backend_vk_context * ctx, size_t idx) {
+     const char* output_tensor = getenv("GGML_VULKAN_OUTPUT_TENSOR");
+     vk_output_tensor = (output_tensor == NULL ? 0 : atoi(output_tensor));
+ #endif
++
++    return true;
+ }
+ 
+ static vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type type) {
+@@ -16967,7 +16992,10 @@ ggml_backend_t ggml_backend_vk_init(size_t dev_num) {
+     VK_LOG_DEBUG("ggml_backend_vk_init(" << dev_num << ")");
+ 
+     ggml_backend_vk_context * ctx = new ggml_backend_vk_context;
+-    ggml_vk_init(ctx, dev_num);
++    if (!ggml_vk_init(ctx, dev_num)) {
++        delete ctx;
++        return nullptr;
++    }
+ 
+     ggml_backend_t vk_backend = new ggml_backend {
+         /* .guid    = */ ggml_backend_vk_guid(),
