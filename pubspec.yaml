@@ -49,7 +49,8 @@ dependencies:
   # PKCE code challenge for the Hugging Face OAuth flow.
   crypto: ^3.0.3
   # Loads OmniVoice's Qwen byte-level BPE vocabulary from tokenizer.json.
-  tiktoken: ^1.0.3
+  # Pin exactly because later releases changed the special-token set API.
+  tiktoken: 1.0.3
 
 dev_dependencies:
   flutter_test:

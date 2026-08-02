@@ -202,10 +202,13 @@ class WhisperService {
       transcribeRequest: TranscribeRequest(
         audio: audioPath,
         language: language ?? await _settings.sttLanguage,
-        // Six workers is the plugin default. Two reduces per-thread scratch
-        // allocations substantially on memory-constrained iPhones.
-        threads: 2,
+        // Each worker owns inference scratch space. One is slower than the
+        // desktop-oriented default but avoids a large peak beside the resident
+        // language and speech models on memory-constrained iPhones.
+        threads: 1,
         isNoTimestamps: true,
+        noContext: true,
+        suppressNonSpeechTokens: true,
         // This is a finalized file; realtime mode is reserved for the
         // plugin's streaming API and must not be mixed with file requests.
         isRealtime: false,

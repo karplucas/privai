@@ -70,7 +70,7 @@ class ChatterboxTokenizer {
   List<int> encode(String text, {bool addSpecialTokens = true}) {
     final ids = _encoding.encode(
       text,
-      allowedSpecial: const SpecialTokensSet.all(),
+      allowedSpecial: SpecialTokensSet.custom(_encoding.specialTokensSet),
     );
     return addSpecialTokens ? [...ids, endOfTextId, endOfTextId] : ids;
   }

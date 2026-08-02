@@ -246,6 +246,23 @@ class TtsRouter {
     }
   }
 
+  /// Releases speech-model sessions before Whisper allocates its decoder.
+  ///
+  /// The language model remains resident. TTS engines lazily initialize on
+  /// their next [TtsEngine.speak] call, so this lowers the iPhone peak without
+  /// reintroducing the disruptive LLM unload/reload cycle.
+  Future<void> releaseForTranscription() async {
+    for (final kind in TtsEngineKind.values) {
+      final engine = engineFor(kind);
+      try {
+        await engine.stop();
+        await engine.dispose();
+      } catch (e) {
+        debugPrint('TtsRouter: could not release ${kind.name} for Whisper: $e');
+      }
+    }
+  }
+
   /// Reloads the configured engine after a settings change, and releases the
   /// other so it is not holding memory it no longer needs.
   Future<void> applySettingsChange() async {

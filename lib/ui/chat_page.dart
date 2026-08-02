@@ -547,7 +547,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
           if (audioPath == null) continue;
 
           _setVoiceModeStatus('Understanding…');
-          transcription = await _whisperService.transcribeFromFile(audioPath);
+          transcription = await _transcribeWithMemoryHeadroom(audioPath);
         }
         if (!_voiceModeIsCurrent(generation)) return;
         if (transcription.trim().isEmpty) continue;
@@ -644,8 +644,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
       setState(() => _isTranscribing = true);
       try {
-        final transcription =
-            await _whisperService.transcribeFromFile(audioPath);
+        final transcription = await _transcribeWithMemoryHeadroom(audioPath);
         if (!mounted) return;
         setState(() => _isTranscribing = false);
         if (transcription.isEmpty) {
@@ -688,6 +687,11 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     } catch (e) {
       _showMessage('Could not start recording: $e');
     }
+  }
+
+  Future<String> _transcribeWithMemoryHeadroom(String audioPath) async {
+    await _tts.releaseForTranscription();
+    return _whisperService.transcribeFromFile(audioPath);
   }
 
   void _scrollToBottom() {

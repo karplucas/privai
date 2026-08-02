@@ -46,8 +46,10 @@ class OmniVoiceTokenizer {
   /// Encodes model prompts, including OmniVoice's control tokens such as
   /// `<|text_start|>`. Treating those strings as ordinary punctuation changes
   /// the conditioning sequence completely and produces non-speech codec data.
-  List<int> encode(String text) =>
-      _encoding.encode(text, allowedSpecial: const SpecialTokensSet.all());
+  List<int> encode(String text) => _encoding.encode(
+        text,
+        allowedSpecial: SpecialTokensSet.custom(_encoding.specialTokensSet),
+      );
 
   static int _decodeRune(Map<int, int> decoder, int rune) {
     final byte = decoder[rune];
