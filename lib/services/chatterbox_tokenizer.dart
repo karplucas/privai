@@ -12,6 +12,15 @@ import 'package:tiktoken/tiktoken.dart';
 /// by Chatterbox Multilingual. It also treats performance tags such as
 /// `[laugh]` as added special tokens and appends two end-of-text tokens.
 class ChatterboxTokenizer {
+  /// The full special-token set is always allowed, encoded here once rather
+  /// than building a fresh [SpecialTokensSet.custom] on every [encode] call.
+  /// [`SpecialTokensSet.all`] also leaves the disallowed set empty, so the
+  /// per-call disallowed regex scan is skipped entirely.
+  static const SpecialTokensSet _allowedSpecial = SpecialTokensSet.all();
+
+  /// GPT-2 byte decoder, computed once and shared by every tokenizer instance.
+  static final Map<int, int> _gpt2ByteDecoder = _buildGpt2ByteDecoder();
+
   ChatterboxTokenizer._(this._encoding, this.endOfTextId, this.vocabSize);
 
   final Tiktoken _encoding;
@@ -31,7 +40,7 @@ class ChatterboxTokenizer {
       throw const FormatException('tokenizer.json has no BPE vocabulary');
     }
 
-    final byteDecoder = _gpt2ByteDecoder();
+    final byteDecoder = _gpt2ByteDecoder;
     final ranks = <ByteArray, int>{};
     for (final entry in vocab.entries) {
       ranks[ByteArray.fromList([
@@ -68,10 +77,7 @@ class ChatterboxTokenizer {
 
   /// Matches `AutoTokenizer(text)` used by the Nano reference implementation.
   List<int> encode(String text, {bool addSpecialTokens = true}) {
-    final ids = _encoding.encode(
-      text,
-      allowedSpecial: SpecialTokensSet.custom(_encoding.specialTokensSet),
-    );
+    final ids = _encoding.encode(text, allowedSpecial: _allowedSpecial);
     return addSpecialTokens ? [...ids, endOfTextId, endOfTextId] : ids;
   }
 
@@ -86,16 +92,22 @@ class ChatterboxTokenizer {
     return byte;
   }
 
-  static Map<int, int> _gpt2ByteDecoder() {
+  static Map<int, int> _buildGpt2ByteDecoder() {
     final bytes = <int>[
       ...List.generate(94, (i) => i + 33),
       ...List.generate(12, (i) => i + 161),
       ...List.generate(82, (i) => i + 174),
     ];
+    final present = List<bool>.filled(256, false);
+    for (final byte in bytes) {
+      present[byte] = true;
+    }
     final codepoints = [...bytes];
     var extra = 0;
     for (var byte = 0; byte < 256; byte++) {
-      if (bytes.contains(byte)) continue;
+      if (present[byte]) {
+        continue;
+      }
       bytes.add(byte);
       codepoints.add(256 + extra++);
     }

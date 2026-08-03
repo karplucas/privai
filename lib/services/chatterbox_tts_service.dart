@@ -94,6 +94,8 @@ class ChatterboxTtsService implements TtsEngine {
   /// budget from [tokenBudgetForText].
   static const int maxSeconds = 30;
 
+  static final RegExp _wordPattern = RegExp(r'\S+');
+
   /// A conservative speech-token budget based on the amount of text to speak.
   ///
   /// Chatterbox normally emits EOS itself, but some prompts miss it and used to
@@ -103,7 +105,7 @@ class ChatterboxTtsService implements TtsEngine {
   /// tail. Character units cover languages that do not separate every word
   /// with spaces.
   static int tokenBudgetForText(String text) {
-    final words = RegExp(r'\S+').allMatches(text.trim()).length;
+    final words = _wordPattern.allMatches(text.trim()).length;
     final characterUnits = (text.runes.length / (words <= 1 ? 2 : 6)).ceil();
     final speechUnits = max(words, characterUnits);
     final estimatedSeconds = (1.5 + speechUnits / 2.3).ceil();
@@ -359,7 +361,17 @@ class ChatterboxTtsService implements TtsEngine {
     final language = _language!;
     final started = DateTime.now();
 
-    final textEmbeds = await _embedFlat(embed, textIds);
+    // The last text token is decoded in its own single-position pass. Its
+    // logits sample the first speech token; the prefill only populates the KV
+    // cache. Reading the prefill's own [1, seq, 6563] logits tensor just to
+    // reach its final row drags the whole utterance's activations across the
+    // platform channel, so the cache-only pass discards it native-side. The
+    // extra decode step costs a fraction of a token, and the results are
+    // identical: the LM is causal, so position `prefillLength - 1` sees the
+    // same keys and values either way.
+    final head = textIds.sublist(0, textIds.length - 1);
+    final textEmbeds = await _embedFlat(embed, head);
+    final prefillLength = speaker.condFrames + head.length;
 
     // The speech encoder's conditioning embedding is prepended to the text
     // embeddings; it carries the speaker and prosody the language model
@@ -370,17 +382,29 @@ class ChatterboxTtsService implements TtsEngine {
         Float32List(speaker.condEmbeddings.length + textEmbeds.length)
           ..setAll(0, speaker.condEmbeddings)
           ..setAll(speaker.condEmbeddings.length, textEmbeds);
-    final prefillLength = speaker.condFrames + textIds.length;
 
     var past = await _emptyCache();
     var totalLength = prefillLength;
 
-    var logits = await _stepLanguageModel(
+    await _stepLanguageModel(
       language,
       embeds: await OrtValue.fromList(prefill, [1, prefillLength, hiddenSize]),
       sequenceLength: prefillLength,
       totalLength: totalLength,
       positionStart: 0,
+      past: past,
+      onPresent: (next) => past = next,
+      readLogits: false,
+    );
+
+    totalLength += 1;
+    final lastEmbeds = await _runEmbed(embed, [textIds.last]);
+    var logits = await _stepLanguageModel(
+      language,
+      embeds: lastEmbeds,
+      sequenceLength: 1,
+      totalLength: totalLength,
+      positionStart: totalLength - 1,
       past: past,
       onPresent: (next) => past = next,
     );
@@ -393,7 +417,7 @@ class ChatterboxTtsService implements TtsEngine {
     final seen = <int>{_startSpeechToken};
 
     debugPrint('ChatterboxTtsService: prefilled ${speaker.condFrames} '
-        'conditioning + ${textIds.length} text positions in '
+        'conditioning + ${head.length} text positions in '
         '${DateTime.now().difference(started).inMilliseconds}ms, decoding at '
         'most $maxTokens speech tokens');
 
@@ -406,7 +430,7 @@ class ChatterboxTtsService implements TtsEngine {
             '(${(elapsed / step).toStringAsFixed(0)}ms/token, '
             '~${(step / tokenRateHz).toStringAsFixed(1)}s of audio)');
       }
-      final next = _sample(logits, seen);
+      final next = _sample(logits!, seen);
       if (next == _stopSpeechToken) break;
 
       generated.add(next);
@@ -438,9 +462,9 @@ class ChatterboxTtsService implements TtsEngine {
     List<int> ids,
   ) async {
     final value = await _runEmbed(session, ids);
-    final flat = (await value.asFlattenedList()).cast<num>();
+    final flat = await value.asFlattenedList();
     await value.dispose();
-    return Float32List.fromList([for (final v in flat) v.toDouble()]);
+    return Float32List.fromList(flat.cast<double>());
   }
 
   Future<OrtValue> _runEmbed(
@@ -469,7 +493,12 @@ class ChatterboxTtsService implements TtsEngine {
   /// The KV tensors stay on the native side: `present.*` outputs are handed
   /// straight back as `past_key_values.*` inputs by reference, so 48 tensors per
   /// step never cross the platform channel.
-  Future<Float32List> _stepLanguageModel(
+  ///
+  /// Returns the last position's logits, or `null` when [readLogits] is false.
+  /// A cache-only pass still pays the forward pass but skips pulling the whole
+  /// `[1, sequence, vocab]` logits tensor across the channel, which is wasteful
+  /// when only the final row would be read (as in the prefill).
+  Future<Float32List?> _stepLanguageModel(
     OrtSession session, {
     required OrtValue embeds,
     required int sequenceLength,
@@ -477,17 +506,16 @@ class ChatterboxTtsService implements TtsEngine {
     required int positionStart,
     required Map<String, OrtValue> past,
     required void Function(Map<String, OrtValue>) onPresent,
+    bool readLogits = true,
   }) async {
-    final mask = await OrtValue.fromList(
-      Int64List.fromList(List<int>.filled(totalLength, 1)),
-      [1, totalLength],
-    );
-    final positions = await OrtValue.fromList(
-      Int64List.fromList(
-        List<int>.generate(sequenceLength, (i) => positionStart + i),
-      ),
-      [1, sequenceLength],
-    );
+    final maskData = Int64List(totalLength)..fillRange(0, totalLength, 1);
+    final mask = await OrtValue.fromList(maskData, [1, totalLength]);
+    final positionsData = Int64List(sequenceLength);
+    for (var i = 0; i < sequenceLength; i++) {
+      positionsData[i] = positionStart + i;
+    }
+    final positions =
+        await OrtValue.fromList(positionsData, [1, sequenceLength]);
 
     final outputs = await session.run({
       'inputs_embeds': embeds,
@@ -517,16 +545,22 @@ class ChatterboxTtsService implements TtsEngine {
         'The language model returned no logits.',
       );
     }
+    if (!readLogits) {
+      await logits.dispose();
+      return null;
+    }
 
     // Only the final position matters when decoding.
-    final flat = (await logits.asFlattenedList()).cast<num>();
+    final flat = await logits.asFlattenedList();
     await logits.dispose();
 
     final vocab = flat.length ~/ sequenceLength;
     final start = (sequenceLength - 1) * vocab;
-    return Float32List.fromList([
-      for (var i = start; i < start + vocab; i++) flat[i].toDouble(),
-    ]);
+    final result = Float32List(vocab);
+    for (var i = 0; i < vocab; i++) {
+      result[i] = flat[start + i].toDouble();
+    }
+    return result;
   }
 
   /// Builds the zero-length FP16 cache the first pass has to supply.
@@ -563,17 +597,19 @@ class ChatterboxTtsService implements TtsEngine {
   /// first and is a poor fit for this stage — a single off-distribution token
   /// derails the rest of the utterance, and it makes the end-of-speech token
   /// something the decoder can miss.
+  ///
+  /// [logits] comes freshly allocated from [_stepLanguageModel] each step and
+  /// is never read again, so the penalty is applied in place instead of paying
+  /// for a full-vocabulary copy per token.
   int _sample(Float32List logits, Set<int> seen) {
-    final scaled = Float32List.fromList(logits);
-
     for (final token in seen) {
-      if (token >= scaled.length) continue;
-      final value = scaled[token];
-      scaled[token] =
+      if (token >= logits.length) continue;
+      final value = logits[token];
+      logits[token] =
           value > 0 ? value / _repetitionPenalty : value * _repetitionPenalty;
     }
 
-    return _argmax(scaled);
+    return _argmax(logits);
   }
 
   int _argmax(Float32List values) {
@@ -635,7 +671,7 @@ class ChatterboxTtsService implements TtsEngine {
 
     // These two are consumed once per utterance rather than passed back into a
     // graph, so they come across the channel now and the tensors are released.
-    final condFlat = (await condEmb.asFlattenedList()).cast<num>();
+    final condFlat = (await condEmb.asFlattenedList()).cast<double>();
     final condFrames = condEmb.shape.length >= 2 ? condEmb.shape[1] : 0;
     final prompt = (await promptTokens.asFlattenedList()).cast<num>();
     await condEmb.dispose();
@@ -644,9 +680,7 @@ class ChatterboxTtsService implements TtsEngine {
     _speaker = _SpeakerConditioning(
       embeddings: embeddings,
       features: features,
-      condEmbeddings: Float32List.fromList([
-        for (final v in condFlat) v.toDouble(),
-      ]),
+      condEmbeddings: Float32List.fromList(condFlat),
       condFrames: condFrames,
       promptTokens: [for (final v in prompt) v.toInt()],
     );
@@ -688,14 +722,10 @@ class ChatterboxTtsService implements TtsEngine {
       );
     }
 
-    final flat = (await waveform.asFlattenedList()).cast<num>();
+    final flat = (await waveform.asFlattenedList()).cast<double>();
     await waveform.dispose();
 
-    final samples = Float32List(flat.length);
-    for (var i = 0; i < flat.length; i++) {
-      samples[i] = flat[i].toDouble();
-    }
-    return samples;
+    return Float32List.fromList(flat);
   }
 
   Future<File> _writeWav(Float32List samples) async {
