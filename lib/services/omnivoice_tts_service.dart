@@ -2,12 +2,12 @@ import 'dart:async';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_onnxruntime/flutter_onnxruntime.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
+import 'audio_clip_player.dart';
 import 'model_storage.dart';
 import 'omnivoice_tokenizer.dart';
 import 'tts_engine.dart';
@@ -36,11 +36,33 @@ class OmniVoiceTtsService implements TtsEngine {
   OmniVoiceTtsService._();
 
   static const bundleName = 'omnivoice-int4';
+
+  /// The fused int8 export. Where the FP32 bundle splits the forward pass over
+  /// three graphs, this one is a single graph that takes token ids straight to
+  /// logits — a third of the download, and one session instead of three.
+  static const int8BundleName = 'omnivoice-int8';
+  static const List<String> bundleNames = [bundleName, int8BundleName];
+
   static const audioEmbeddingsGraph = 'audio_embeddings_encoder.onnx';
   static const audioHeadsGraph = 'audio_heads_decoder.onnx';
   static const llmGraph = 'llm_backbone_fp32.onnx';
+  static const fusedGraph = 'omnivoice.qint8.onnx';
   static const decoderGraph = 'higgs_decoder.onnx';
   static const tokenizerFile = 'tokenizer.json';
+
+  /// Files each bundle must have before it can be loaded.
+  static const List<String> splitFiles = [
+    audioEmbeddingsGraph,
+    audioHeadsGraph,
+    llmGraph,
+    decoderGraph,
+    tokenizerFile,
+  ];
+  static const List<String> fusedFiles = [
+    fusedGraph,
+    decoderGraph,
+    tokenizerFile,
+  ];
 
   static const _codebooks = 8;
   static const _audioMaskId = 1024;
@@ -57,9 +79,17 @@ class OmniVoiceTtsService implements TtsEngine {
   OrtSession? _embeddings;
   OrtSession? _heads;
   OrtSession? _llm;
+
+  /// Set when the loaded bundle is the fused int8 export, in which case
+  /// [_embeddings] and [_heads] stay null and [_llm] is the whole forward pass.
+  bool _fused = false;
   OrtSession? _decoder;
   OmniVoiceTokenizer? _tokenizer;
-  AudioPlayer? _player;
+  final AudioClipPlayer _player = AudioClipPlayer('OmniVoiceTtsService');
+
+  /// Completed by [stop] so a clip that is cut short stops being awaited at
+  /// once; `AudioPlayer.stop()` emits no completion event.
+  Completer<void> _stopSignal = Completer<void>();
   int _playbackEpoch = 0;
   Future<void>? _initialization;
 
@@ -75,23 +105,33 @@ class OmniVoiceTtsService implements TtsEngine {
     return _initialization ??= _initialize();
   }
 
+  /// Picks the installed bundle, preferring the one the user selected.
+  ///
+  /// The two exports are interchangeable from the decoding loop's point of
+  /// view but not on disk, so which one is present decides how the forward
+  /// pass runs.
+  Future<(String, bool)> _resolveBundle() async {
+    final selected = await _settings.selectedTtsModel;
+    final candidates = [
+      if (selected != null && bundleNames.contains(selected)) selected,
+      ...bundleNames,
+    ];
+    for (final name in candidates) {
+      final fused = name == int8BundleName;
+      final required = fused ? fusedFiles : splitFiles;
+      if (await _storage.bundleIsComplete(name, required)) return (name, fused);
+    }
+    throw const OmniVoiceUnavailableException(
+      'OmniVoice is not fully downloaded. Open Settings & models to finish '
+      'the download.',
+    );
+  }
+
   Future<void> _initialize() async {
     try {
-      final dir = await _storage.bundleDirectory(bundleName);
-      for (final name in const [
-        audioEmbeddingsGraph,
-        audioHeadsGraph,
-        llmGraph,
-        decoderGraph,
-        tokenizerFile,
-      ]) {
-        if (!await File('${dir.path}/$name').exists()) {
-          throw OmniVoiceUnavailableException(
-            'OmniVoice is not fully downloaded ("$name" is missing). Open '
-            'Settings & models to finish the download.',
-          );
-        }
-      }
+      final (bundle, fused) = await _resolveBundle();
+      _fused = fused;
+      final dir = await _storage.bundleDirectory(bundle);
       _tokenizer =
           await OmniVoiceTokenizer.fromFile('${dir.path}/$tokenizerFile');
       final ort = OnnxRuntime();
@@ -99,19 +139,25 @@ class OmniVoiceTtsService implements TtsEngine {
         providers: const [OrtProvider.CPU],
         intraOpNumThreads: Platform.numberOfProcessors,
       );
-      _embeddings = await ort.createSession(
-        '${dir.path}/$audioEmbeddingsGraph',
-        options: cpuOptions,
+      if (!fused) {
+        _embeddings = await ort.createSession(
+          '${dir.path}/$audioEmbeddingsGraph',
+          options: cpuOptions,
+        );
+        _heads = await ort.createSession(
+          '${dir.path}/$audioHeadsGraph',
+          options: cpuOptions,
+        );
+      }
+      _llm = await _createBackboneSession(
+        ort,
+        '${dir.path}/${fused ? fusedGraph : llmGraph}',
       );
-      _heads = await ort.createSession(
-        '${dir.path}/$audioHeadsGraph',
-        options: cpuOptions,
-      );
-      _llm = await _createBackboneSession(ort, '${dir.path}/$llmGraph');
       _decoder = await ort.createSession('${dir.path}/$decoderGraph',
           options: cpuOptions);
-      _player ??= AudioPlayer();
-      debugPrint('OmniVoiceTtsService: ready (hybrid automatic voice)');
+      await _player.warmUp();
+      debugPrint('OmniVoiceTtsService: ready '
+          '(${fused ? 'fused int8' : 'split fp32'} backbone)');
     } catch (e) {
       await _releaseSessions();
       _initialization = null;
@@ -175,13 +221,19 @@ class OmniVoiceTtsService implements TtsEngine {
     final file = File(
       '${directory.path}/omnivoice_${DateTime.now().millisecondsSinceEpoch}.wav',
     );
-    await file.writeAsBytes(encodeWav(samples, sampleRate: _sampleRate));
+    await file.writeAsBytes(encodeWav(
+      samples,
+      sampleRate: _sampleRate,
+      leadingSilence: AudioClipPlayer.leadingSilence,
+    ));
     try {
-      debugPrint('OmniVoiceTtsService: playing '
-          '${(samples.length / _sampleRate).toStringAsFixed(1)}s');
-      await _player!.play(DeviceFileSource(file.path));
-      await _player!.onPlayerComplete.first.timeout(
-        Duration(seconds: (samples.length / _sampleRate).ceil() + 5),
+      final seconds = samples.length / _sampleRate;
+      debugPrint(
+          'OmniVoiceTtsService: playing ${seconds.toStringAsFixed(1)}s');
+      await _player.play(
+        file,
+        expected: Duration(milliseconds: (seconds * 1000).round()),
+        interrupted: _stopSignal.future,
       );
     } finally {
       try {
@@ -351,6 +403,9 @@ class OmniVoiceTtsService implements TtsEngine {
       ],
       [1, sequence],
     );
+    if (_fused) {
+      return _runFused(inputIds, audioMask, sequence);
+    }
     final embeddingOutputs = await _embeddings!.run({
       'input_ids': inputIds,
       'audio_mask': audioMask,
@@ -410,6 +465,48 @@ class OmniVoiceTtsService implements TtsEngine {
     return flat;
   }
 
+  /// Runs the fused int8 graph, which is the three split graphs in one.
+  ///
+  /// It differs from the split path in two of its inputs. The attention mask is
+  /// the ordinary 2-D padding mask rather than the 4-D all-true one — this
+  /// export applies bidirectional attention internally, which matters because
+  /// masked diffusion needs every position to see every other, and a causal
+  /// export decodes as noise. Position ids are explicit rather than inferred.
+  Future<List<num>> _runFused(
+    OrtValue inputIds,
+    OrtValue audioMask,
+    int sequence,
+  ) async {
+    final attention = await OrtValue.fromList(
+      Int64List.fromList(List<int>.filled(sequence, 1)),
+      [1, sequence],
+    );
+    final positions = await OrtValue.fromList(
+      Int64List.fromList(List<int>.generate(sequence, (i) => i)),
+      [1, sequence],
+    );
+    final outputs = await _llm!.run({
+      'input_ids': inputIds,
+      'audio_mask': audioMask,
+      'attention_mask': attention,
+      'position_ids': positions,
+    });
+    await inputIds.dispose();
+    await audioMask.dispose();
+    await attention.dispose();
+    await positions.dispose();
+    final logits = outputs['logits'];
+    if (logits == null) {
+      await _disposeOutputs(outputs);
+      throw const OmniVoiceUnavailableException(
+        'The fused OmniVoice graph returned no logits.',
+      );
+    }
+    final flat = (await logits.asFlattenedList()).cast<num>();
+    await _disposeOutputs(outputs);
+    return flat;
+  }
+
   Future<void> _disposeOutputs(Map<String, OrtValue> outputs,
       {OrtValue? except}) async {
     for (final value in outputs.values) {
@@ -426,7 +523,9 @@ class OmniVoiceTtsService implements TtsEngine {
   @override
   Future<void> stop() async {
     _playbackEpoch++;
-    await _player?.stop();
+    if (!_stopSignal.isCompleted) _stopSignal.complete();
+    _stopSignal = Completer<void>();
+    await _player.stop();
   }
 
   @override
@@ -456,8 +555,7 @@ class OmniVoiceTtsService implements TtsEngine {
     await stop();
     await _releaseSessions();
     _initialization = null;
-    await _player?.dispose();
-    _player = null;
+    await _player.dispose();
   }
 }
 

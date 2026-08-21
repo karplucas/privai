@@ -10,7 +10,7 @@ index f88f7dc..c69887d 100644
  # SetupTtsBackbone.cmake — build an ISOLATED llama.cpp backbone for tts-cli.
  #
  # codec.cpp links ggml 0.9 (the standalone ggml submodule) as a shared
-@@ -18,6 +22,99 @@
+@@ -18,6 +22,100 @@
  
  include(ExternalProject)
  
@@ -24,7 +24,8 @@ index f88f7dc..c69887d 100644
 +endif()
 +foreach(_v ANDROID_ABI ANDROID_PLATFORM ANDROID_STL ANDROID_NDK
 +           CMAKE_SYSTEM_NAME CMAKE_SYSTEM_VERSION CMAKE_ANDROID_ARCH_ABI
-+           CMAKE_OSX_SYSROOT CMAKE_OSX_ARCHITECTURES)
++           CMAKE_OSX_SYSROOT CMAKE_OSX_ARCHITECTURES
++           CMAKE_OSX_DEPLOYMENT_TARGET)
 +    if(DEFINED ${_v})
 +        list(APPEND _ll_cross_args "-D${_v}=${${_v}}")
 +    endif()
@@ -237,7 +238,7 @@ diff --git a/common/tts_runner.cpp b/common/tts_runner.cpp
 index f702e70..d30adcc 100644
 --- a/common/tts_runner.cpp
 +++ b/common/tts_runner.cpp
-@@ -1095,7 +1095,15 @@ bool tts_runner_synthesize(const tts_runner_params & a, tts_runner_result * out)
+@@ -1095,7 +1095,10 @@ bool tts_runner_synthesize(const tts_runner_params & a, tts_runner_result * out)
      // ── Backbone init ──────────────────────────────────────────────
      llama_backend_init();
      llama_model_params mp = llama_model_default_params();
@@ -247,14 +248,9 @@ index f702e70..d30adcc 100644
 +    // loop, so honour the caller's use_gpu instead.
 +    mp.n_gpu_layers = a.use_gpu ? 999 : 0;
      llama_model * lmodel = llama_model_load_from_file(a.backbone_path.c_str(), mp);
-+    if (!lmodel && a.use_gpu) {
-+        std::fprintf(stderr, "Vulkan backbone initialization failed; retrying on CPU\n");
-+        mp.n_gpu_layers = 0;
-+        lmodel = llama_model_load_from_file(a.backbone_path.c_str(), mp);
-+    }
      if (!lmodel) {
          out->error = "llama_model_load_from_file failed: " + a.backbone_path;
-@@ -1119,9 +1127,26 @@ bool tts_runner_synthesize(const tts_runner_params & a, tts_runner_result * out)
+@@ -1119,9 +1122,26 @@ bool tts_runner_synthesize(const tts_runner_params & a, tts_runner_result * out)
  
      const int32_t max_frames = a.max_frames > 0 ? a.max_frames : 512;
      llama_context_params cp = llama_context_default_params();
@@ -314,3 +310,61 @@ index 054916e..eb943b3 100644
          }
          if (impl->heads[(size_t) i] == nullptr || impl->audio_embds[(size_t) i] == nullptr) {
              // Already validated via codec_lm_check_unfused_audio_tables, but
+diff --git a/cmake/SetupTtsBackbone.cmake b/cmake/SetupTtsBackbone.cmake
+--- a/cmake/SetupTtsBackbone.cmake
++++ b/cmake/SetupTtsBackbone.cmake
+@@ -23,3 +23,14 @@ set(_ll_libdir   "${_ll_prefix}/src/llama-build/src")
+ set(_ll_ggmldir  "${_ll_prefix}/src/llama-build/ggml/src")
+ set(_ll_commondir "${_ll_prefix}/src/llama-build/common")
+ set(_ll_vendordir "${_ll_prefix}/src/llama-build/vendor")
++
++# Multi-config Xcode generators put archives under Release-iphoneos or
++# Release-iphonesimulator rather than directly in each target directory.
++set(_ll_archive_config_dir "")
++if(CMAKE_GENERATOR STREQUAL "Xcode")
++    if(CMAKE_OSX_SYSROOT MATCHES "iphonesimulator")
++        set(_ll_archive_config_dir "/Release-iphonesimulator")
++    else()
++        set(_ll_archive_config_dir "/Release-iphoneos")
++    endif()
++endif()
+@@ -40,10 +52,10 @@ set(_ll_vendordir "${_ll_prefix}/src/llama-build/vendor")
+ # undefined, resolved internally against the bundled ggml 0.15) so the
+ # `local: *` catch-all still hides every ggml_* — no ABI leak.
+ set(_ll_archives
+-    "${_ll_libdir}/libllama.a"
+-    "${_ll_commondir}/libllama-common.a"
+-    "${_ll_commondir}/libllama-common-base.a"
+-    "${_ll_vendordir}/cpp-httplib/libcpp-httplib.a"
+-    "${_ll_ggmldir}/libggml.a"
+-    "${_ll_ggmldir}/libggml-cpu.a"
+-    "${_ll_ggmldir}/libggml-base.a")
++    "${_ll_libdir}${_ll_archive_config_dir}/libllama.a"
++    "${_ll_commondir}${_ll_archive_config_dir}/libllama-common.a"
++    "${_ll_commondir}${_ll_archive_config_dir}/libllama-common-base.a"
++    "${_ll_vendordir}/cpp-httplib${_ll_archive_config_dir}/libcpp-httplib.a"
++    "${_ll_ggmldir}${_ll_archive_config_dir}/libggml.a"
++    "${_ll_ggmldir}${_ll_archive_config_dir}/libggml-cpu.a"
++    "${_ll_ggmldir}${_ll_archive_config_dir}/libggml-base.a")
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -82,6 +82,14 @@ set(CODEC_SOURCES
+ # libggml.so.0.  Use OBJECT to compile sources once.
+-add_library(codec_objs OBJECT ${CODEC_SOURCES})
+-set_target_properties(codec_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
+-add_library(codec        STATIC $<TARGET_OBJECTS:codec_objs>)
+-add_library(codec_shared SHARED $<TARGET_OBJECTS:codec_objs>)
++add_library(codec_objs OBJECT ${CODEC_SOURCES})
++set_target_properties(codec_objs PROPERTIES POSITION_INDEPENDENT_CODE ON)
++if(APPLE)
++    # Xcode can report success for a STATIC target made only from
++    # $<TARGET_OBJECTS:...> without materializing the archive. Compile the
++    # static library directly so downstream dylibs always get libcodec.a.
++    add_library(codec        STATIC ${CODEC_SOURCES})
++    add_library(codec_shared SHARED $<TARGET_OBJECTS:codec_objs>)
++else()
++    add_library(codec        STATIC $<TARGET_OBJECTS:codec_objs>)
++    add_library(codec_shared SHARED $<TARGET_OBJECTS:codec_objs>)
++endif()
+ set_target_properties(codec_shared PROPERTIES OUTPUT_NAME codec)

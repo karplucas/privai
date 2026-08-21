@@ -37,6 +37,7 @@ class AppSettings {
   static const _kChatterboxExaggeration = 'chatterbox_exaggeration';
   static const _kKeepChatterboxLoaded = 'keep_chatterbox_loaded';
   static const _kOmnivoiceRefinementSteps = 'omnivoice_refinement_steps';
+  static const _kChatterboxGgufGpu = 'chatterbox_gguf_use_gpu';
 
   // Defaults
   static const String defaultSystemPrompt =
@@ -96,6 +97,18 @@ class AppSettings {
       _readInt(_kLlmMaxTokens, defaultMaxTokens, min: 256, max: 32768);
   Future<void> setMaxTokens(int value) =>
       _storage.write(key: _kLlmMaxTokens, value: value.toString());
+
+  /// Whether the GGUF engine offloads its decode loop to the GPU.
+  ///
+  /// Off by default, but the answer genuinely depends on the device. On a
+  /// discrete GPU it ran *slower* than eight CPU threads — autoregressive
+  /// decode dispatches one token at a time and never assembles a batch wide
+  /// enough to repay the round trip. On Android it measured 153 ms/token
+  /// against 270 on the CPU. Worth trying either way.
+  Future<bool> get chatterboxGgufUseGpu async =>
+      (await _storage.read(key: _kChatterboxGgufGpu)) == 'true';
+  Future<void> setChatterboxGgufUseGpu(bool value) =>
+      _storage.write(key: _kChatterboxGgufGpu, value: value.toString());
 
   // --- Voice toggles ---
 

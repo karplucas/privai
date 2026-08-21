@@ -29,7 +29,6 @@ CMakeLists.txt               builds codec.cpp + the isolated backbone + the shim
 vendor/codec.cpp             submodule
 patches/codec.cpp.patch      local codec.cpp changes
 patches/llama.cpp-vulkan.patch  Vulkan fix for codec.cpp's nested llama.cpp
-patches/upstream/            clean patches based on current upstream revisions
 ```
 
 Android builds this via `android/app/build.gradle`'s `externalNativeBuild`,
@@ -59,12 +58,6 @@ The `--check` commands make the process fail before modifying a submodule if a
 patch no longer matches its pinned revision. A second application is expected
 to fail because the changes are already present. To confirm that situation,
 use `git apply --reverse --check` with the same path.
-
-`patches/upstream/llama.cpp-vulkan-init-fallback.patch` is the focused version
-of the non-fatal Vulkan initialization change based on llama.cpp commit
-`de699957b92f490efebad149665b0dccf127eaff`. It is kept separate for upstream
-review and must not be applied to the pinned submodule;
-`patches/llama.cpp-vulkan.patch` already contains its backport.
 
 ## Platform status
 
@@ -138,18 +131,11 @@ See `patches/llama.cpp-vulkan.patch`, which applies to the nested llama.cpp subm
 (not codec.cpp — a separate patch for a separate repository).
 
 Until that was found, a Vulkan build died at *library load*, before anything
-asked for a GPU, taking the CPU path down with it. A separate risk remains:
-errors raised by the Vulkan loader itself happen before backend initialization
-can return failure. Opt out with `-Pchatterbox.vulkan=false`. Containing loader
-failures would need `GGML_BACKEND_DL`, so the backend loads only when the GPU
-is requested.
-
-The local patch also makes explicit Vulkan backend initialization non-fatal:
-a device is cached only after initialization completes, and initialization
-returns `nullptr` on failure. The Chatterbox runner then retries a failed GPU
-backbone load once with `n_gpu_layers = 0`. This handles failures reached while
-loading a model; dynamic backend loading is still needed to contain failures
-that happen earlier while loading the Vulkan library itself.
+asked for a GPU, taking the CPU path down with it. That risk is not fully
+gone: ggml still creates a Vulkan device eagerly, so a driver it cannot
+satisfy for some other reason would crash the app even with the switch off.
+Opt out with `-Pchatterbox.vulkan=false`. Making it survivable would need
+`GGML_BACKEND_DL`, so the backend loads only when the GPU is requested.
 
 ### What it took to compile
 

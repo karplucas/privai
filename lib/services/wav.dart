@@ -2,18 +2,27 @@ import 'dart:io';
 import 'dart:typed_data';
 
 /// Encodes mono float samples in -1..1 as a 16-bit PCM WAV file.
+///
+/// [leadingSilence] prepends that much digital silence. Preparing the player
+/// before resuming it (see `AudioClipPlayer`) is the actual fix for clipped
+/// openings; this is the belt to that pair of braces, and cheap — a few
+/// milliseconds of zeros cost nothing and are not heard as a gap, whereas a
+/// swallowed first consonant is heard every time.
 Uint8List encodeWav(
   List<double> samples, {
   required int sampleRate,
   int channels = 1,
+  Duration leadingSilence = Duration.zero,
 }) {
   const bitsPerSample = 16;
   final byteRate = sampleRate * channels * (bitsPerSample ~/ 8);
   final blockAlign = channels * (bitsPerSample ~/ 8);
 
-  final pcm = Int16List(samples.length);
+  final padding =
+      (leadingSilence.inMicroseconds * sampleRate) ~/ Duration.microsecondsPerSecond * channels;
+  final pcm = Int16List(padding + samples.length);
   for (var i = 0; i < samples.length; i++) {
-    pcm[i] = (samples[i] * 32767).round().clamp(-32768, 32767);
+    pcm[padding + i] = (samples[i] * 32767).round().clamp(-32768, 32767);
   }
   final pcmBytes = pcm.buffer.asUint8List();
 

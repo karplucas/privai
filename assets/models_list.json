@@ -136,6 +136,239 @@
       "gated": false,
       "license": "CC-BY-NC-4.0",
       "licenseNote": "The OmniVoice pretrained weights are for non-commercial use. The Higgs audio decoder has separate Boson/Meta community terms."
+    },
+    {
+      "name": "OmniVoice Fused INT8 (ONNX)",
+      "repo": "aoiandroid/omnivoice-onnx-qint8",
+      "revision": "b35934058340101ffbb2c3784a575a0eddf7cae4",
+      "engine": "omnivoice",
+      "directory": "omnivoice-int8",
+      "filename": "omnivoice-int8",
+      "files": [
+        {
+          "file": "onnx/omnivoice.qint8.onnx"
+        },
+        {
+          "file": "onnx/omnivoice.qint8.onnx_data"
+        },
+        {
+          "file": "tokenizer.json"
+        },
+        {
+          "file": "audio_tokenizer/fp16/higgs_decoder.onnx",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        },
+        {
+          "file": "audio_tokenizer/fp16/higgs_decoder.onnx.data",
+          "repo": "onnx-community/OmniVoice-Onnx",
+          "revision": "a7be7c65cc118137683f49eff0f80fdf9d5b5dbf"
+        }
+      ],
+      "size": "638MB",
+      "description": "A third of the FP32 download; the whole forward pass in one quantized graph",
+      "gated": false,
+      "license": "Apache-2.0",
+      "licenseNote": "The Higgs audio decoder has separate Boson/Meta community terms."
+    },
+    {
+      "name": "Chatterbox Multilingual (GGUF q4_k_m)",
+      "repo": "BricksDisplay/Chatterbox-Multilingual-TTS-GGUF",
+      "revision": "37277eeb9e26da8e3fba65b52727cb30b0bc5ae8",
+      "engine": "chatterboxGguf",
+      "directory": "chatterbox-gguf",
+      "filename": "chatterbox-gguf",
+      "files": [
+        {
+          "file": "chatterbox-mtl-t3-q4_k_m.gguf"
+        },
+        {
+          "file": "chatterbox-mtl-codec-q4_k_m.gguf"
+        }
+      ],
+      "size": "491MB",
+      "description": "23 languages and voice cloning, decoded natively rather than through ONNX Runtime",
+      "gated": false,
+      "license": "MIT",
+      "homepage": "https://huggingface.co/ResembleAI/chatterbox"
+    },
+    {
+      "name": "Supertonic 3 (fp32)",
+      "repo": "Supertone/supertonic-3",
+      "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323",
+      "engine": "supertonic",
+      "directory": "supertonic-3",
+      "filename": "supertonic-3",
+      "files": [
+        {
+          "file": "onnx/duration_predictor.onnx"
+        },
+        {
+          "file": "onnx/text_encoder.onnx"
+        },
+        {
+          "file": "onnx/vector_estimator.onnx"
+        },
+        {
+          "file": "onnx/vocoder.onnx"
+        },
+        {
+          "file": "onnx/unicode_indexer.json"
+        },
+        {
+          "file": "onnx/tts.json"
+        },
+        {
+          "file": "voice_styles/F1.json"
+        },
+        {
+          "file": "voice_styles/F2.json"
+        },
+        {
+          "file": "voice_styles/F3.json"
+        },
+        {
+          "file": "voice_styles/F4.json"
+        },
+        {
+          "file": "voice_styles/F5.json"
+        },
+        {
+          "file": "voice_styles/M1.json"
+        },
+        {
+          "file": "voice_styles/M2.json"
+        },
+        {
+          "file": "voice_styles/M3.json"
+        },
+        {
+          "file": "voice_styles/M4.json"
+        },
+        {
+          "file": "voice_styles/M5.json"
+        }
+      ],
+      "size": "401MB",
+      "description": "Fast 99M flow-matching model; 44.1 kHz, 10 voices, 31 languages (no Chinese)",
+      "gated": false,
+      "license": "OpenRAIL-M",
+      "licenseNote": "The Supertonic weights are released under OpenRAIL-M, which carries use restrictions. Supertone's sample code is MIT.",
+      "homepage": "https://huggingface.co/Supertone/supertonic-3"
+    },
+    {
+      "name": "Supertonic 3 (int8)",
+      "repo": "csukuangfj2/sherpa-onnx-supertonic-3-tts-int8-2026-05-11",
+      "revision": "cca5a0e6c96e1d2c720986bf7e75fcc81dee3ae4",
+      "engine": "supertonic",
+      "directory": "supertonic-3-int8",
+      "filename": "supertonic-3-int8",
+      "files": [
+        {
+          "file": "duration_predictor.int8.onnx",
+          "as": "duration_predictor.onnx"
+        },
+        {
+          "file": "text_encoder.int8.onnx",
+          "as": "text_encoder.onnx"
+        },
+        {
+          "file": "vector_estimator.int8.onnx",
+          "as": "vector_estimator.onnx"
+        },
+        {
+          "file": "vocoder.int8.onnx",
+          "as": "vocoder.onnx"
+        },
+        {
+          "file": "onnx/unicode_indexer.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "onnx/tts.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/F1.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/F2.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/F3.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/F4.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/F5.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/M1.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/M2.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/M3.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/M4.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        },
+        {
+          "file": "voice_styles/M5.json",
+          "repo": "Supertone/supertonic-3",
+          "revision": "3cadd1ee6394adea1bd021217a0e650ede09a323"
+        }
+      ],
+      "size": "145MB",
+      "description": "Same speed as fp32 in a third of the download; 44.1 kHz, 10 voices, 31 languages (no Chinese)",
+      "gated": false,
+      "license": "OpenRAIL-M",
+      "licenseNote": "The Supertonic weights are released under OpenRAIL-M, which carries use restrictions. The quantised graphs are a community rebuild of those weights; the character table, config and voices come from Supertone's own repository.",
+      "homepage": "https://huggingface.co/Supertone/supertonic-3"
+    },
+    {
+      "name": "Meta MMS-TTS English (fp32)",
+      "repo": "Xenova/mms-tts-eng",
+      "revision": "3f8955a2adbd6487ce57420620d4916de22b9dac",
+      "engine": "mms",
+      "directory": "mms-tts-eng",
+      "filename": "mms-tts-eng",
+      "files": [
+        {
+          "file": "onnx/model.onnx"
+        },
+        {
+          "file": "vocab.json"
+        }
+      ],
+      "size": "114MB",
+      "description": "Small and faster than real time; one English voice at 16 kHz",
+      "gated": false,
+      "license": "CC-BY-NC-4.0",
+      "licenseNote": "Meta releases the MMS weights for non-commercial use only.",
+      "homepage": "https://huggingface.co/facebook/mms-tts-eng"
     }
   ],
   "stt": [
@@ -147,7 +380,8 @@
       "size": "60MB",
       "description": "Good balance of speed and accuracy",
       "gated": false,
-      "license": "MIT"
+      "license": "MIT",
+      "engine": "whisper"
     },
     {
       "name": "Whisper Small (q5_1)",
@@ -157,7 +391,8 @@
       "size": "190MB",
       "description": "Better accuracy for challenging audio",
       "gated": false,
-      "license": "MIT"
+      "license": "MIT",
+      "engine": "whisper"
     },
     {
       "name": "Whisper Large v3 Turbo (q5_0)",
@@ -167,7 +402,35 @@
       "size": "574MB",
       "description": "Best accuracy, still fast",
       "gated": false,
-      "license": "MIT"
+      "license": "MIT",
+      "engine": "whisper"
+    },
+    {
+      "name": "Parakeet TDT 0.6B v3 (int8)",
+      "repo": "istupakov/parakeet-tdt-0.6b-v3-onnx",
+      "revision": "8f23f0c03c8761650bdb5b40aaf3e40d2c15f1ce",
+      "engine": "parakeet",
+      "directory": "parakeet-tdt-0.6b-v3",
+      "filename": "parakeet-tdt-0.6b-v3",
+      "files": [
+        {
+          "file": "nemo128.onnx"
+        },
+        {
+          "file": "encoder-model.int8.onnx"
+        },
+        {
+          "file": "decoder_joint-model.int8.onnx"
+        },
+        {
+          "file": "vocab.txt"
+        }
+      ],
+      "size": "640MB",
+      "description": "Fast and accurate; punctuation and 25 European languages, detected automatically",
+      "gated": false,
+      "license": "CC-BY-4.0",
+      "homepage": "https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3"
     }
   ],
   "tts_languages": [
@@ -202,6 +465,10 @@
     {
       "code": "pt-br",
       "name": "Portuguese (Brazil)"
+    },
+    {
+      "code": "pl",
+      "name": "Polish"
     }
   ],
   "stt_languages": [

@@ -1,30 +1,20 @@
 PODS:
-  - audioplayers_darwin (0.0.1):
-    - Flutter
+  - ChatterboxNative (0.1.0)
   - Flutter (1.0.0)
   - flutter_gemma_mediapipe (1.0.4):
     - Flutter
     - MediaPipeTasksGenAI (= 0.10.33)
     - MediaPipeTasksGenAIC (= 0.10.33)
-  - flutter_secure_storage (6.0.0):
-    - Flutter
-  - flutter_web_auth_2 (3.0.0):
-    - Flutter
   - MediaPipeTasksGenAI (0.10.33):
     - MediaPipeTasksGenAIC (= 0.10.33)
   - MediaPipeTasksGenAIC (0.10.33)
-  - permission_handler_apple (9.3.0):
-    - Flutter
   - whisper_ggml (1.0.1):
     - Flutter
 
 DEPENDENCIES:
-  - audioplayers_darwin (from `.symlinks/plugins/audioplayers_darwin/ios`)
+  - ChatterboxNative (from `../native/chatterbox/ios`)
   - Flutter (from `Flutter`)
   - flutter_gemma_mediapipe (from `.symlinks/plugins/flutter_gemma_mediapipe/ios`)
-  - flutter_secure_storage (from `.symlinks/plugins/flutter_secure_storage/ios`)
-  - flutter_web_auth_2 (from `.symlinks/plugins/flutter_web_auth_2/ios`)
-  - permission_handler_apple (from `.symlinks/plugins/permission_handler_apple/ios`)
   - whisper_ggml (from `.symlinks/plugins/whisper_ggml/ios`)
 
 SPEC REPOS:
@@ -33,32 +23,23 @@ SPEC REPOS:
     - MediaPipeTasksGenAIC
 
 EXTERNAL SOURCES:
-  audioplayers_darwin:
-    :path: ".symlinks/plugins/audioplayers_darwin/ios"
+  ChatterboxNative:
+    :path: "../native/chatterbox/ios"
   Flutter:
     :path: Flutter
   flutter_gemma_mediapipe:
     :path: ".symlinks/plugins/flutter_gemma_mediapipe/ios"
-  flutter_secure_storage:
-    :path: ".symlinks/plugins/flutter_secure_storage/ios"
-  flutter_web_auth_2:
-    :path: ".symlinks/plugins/flutter_web_auth_2/ios"
-  permission_handler_apple:
-    :path: ".symlinks/plugins/permission_handler_apple/ios"
   whisper_ggml:
     :path: ".symlinks/plugins/whisper_ggml/ios"
 
 SPEC CHECKSUMS:
-  audioplayers_darwin: ccf9c770ee768abb07e26d90af093f7bab1c12ab
+  ChatterboxNative: 9f0311ede57723c77dda31f6060cad548c5e678f
   Flutter: cabc95a1d2626b1b06e7179b784ebcf0c0cde467
   flutter_gemma_mediapipe: 9f914ffd91280c77be1026cd6ced94dc8647d4f5
-  flutter_secure_storage: 1ed9476fba7e7a782b22888f956cce43e2c62f13
-  flutter_web_auth_2: 5c8d9dcd7848b5a9efb086d24e7a9adcae979c80
   MediaPipeTasksGenAI: 8eed8e6d03fe26d30c4205cb5295ec7b394432ad
   MediaPipeTasksGenAIC: cb098ecea44e248efe8fe7e2f62b4cb0df781802
-  permission_handler_apple: 4ed2196e43d0651e8ff7ca3483a069d469701f2d
   whisper_ggml: e49d353bd4736293ca18f7a1e90accec56d9b57d
 
-PODFILE CHECKSUM: 2f6dc805d86175a59b4b85579ae5664e78d80492
+PODFILE CHECKSUM: d1004580fb90d26a81d836889aa9ab931ba7288b
 
 COCOAPODS: 1.17.0

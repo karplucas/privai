@@ -1,19 +1,19 @@
 import 'dart:async';
 import 'dart:io';
-import 'dart:typed_data';
 
-import 'package:audioplayers/audioplayers.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:kokoro_tts_flutter/kokoro_tts_flutter.dart';
 import 'package:path_provider/path_provider.dart';
 
 import 'app_settings.dart';
+import 'audio_clip_player.dart';
 import 'asset_bundle_override.dart';
 import 'model_catalog.dart';
 import 'model_storage.dart';
 import 'tts_engine.dart';
 import 'voice_pack_service.dart';
+import 'wav.dart';
 
 /// Raised when speech synthesis cannot start, with a message worth showing.
 class TtsUnavailableException implements Exception {
@@ -56,7 +56,7 @@ class KokoroTtsService implements TtsEngine {
   final ModelStorage _storage = ModelStorage();
 
   Kokoro? _kokoro;
-  AudioPlayer? _player;
+  final AudioClipPlayer _player = AudioClipPlayer('KokoroTtsService');
   String? _loadedModelPath;
   Future<void>? _initialization;
   Future<void> _synthesisTail = Future<void>.value();
@@ -101,7 +101,7 @@ class KokoroTtsService implements TtsEngine {
 
       _kokoro = kokoro;
       _loadedModelPath = modelPath;
-      _player ??= AudioPlayer();
+      await _player.warmUp();
       debugPrint('KokoroTtsService: ready with $modelPath');
     } catch (e) {
       _kokoro = null;
@@ -319,15 +319,11 @@ class KokoroTtsService implements TtsEngine {
       }
       if (epoch != _playbackEpoch) return;
 
-      final stopped = _stopSignal.future;
-      await _player!.play(DeviceFileSource(file.path));
-      await Future.any<void>([
-        _player!.onPlayerComplete.first,
-        stopped,
-        Future<void>.delayed(
-          Duration(milliseconds: (durationSeconds * 1000).round() + 5000),
-        ),
-      ]);
+      await _player.play(
+        file,
+        expected: Duration(milliseconds: (durationSeconds * 1000).round()),
+        interrupted: _stopSignal.future,
+      );
     } finally {
       try {
         if (await file.exists()) await file.delete();
@@ -377,43 +373,19 @@ class KokoroTtsService implements TtsEngine {
     return availableVoiceIds();
   }
 
+  /// Encodes 24 kHz mono samples, through the same writer every other engine
+  /// uses — this used to be a second copy of the WAV header, which meant the
+  /// leading-silence fix for clipped openings would have missed Kokoro.
   Future<File> _writeWav(List<double> samples) async {
-    const sampleRate = 24000;
-    const channels = 1;
-    const bitsPerSample = 16;
-    const byteRate = sampleRate * channels * (bitsPerSample ~/ 8);
-    const blockAlign = channels * (bitsPerSample ~/ 8);
-
-    final pcm = Int16List(samples.length);
-    for (var i = 0; i < samples.length; i++) {
-      pcm[i] = (samples[i] * 32767).round().clamp(-32768, 32767);
-    }
-    final pcmBytes = pcm.buffer.asUint8List();
-
-    final header = ByteData(44);
-    header.setUint32(0, 0x52494646, Endian.big); // "RIFF"
-    header.setUint32(4, 36 + pcmBytes.length, Endian.little);
-    header.setUint32(8, 0x57415645, Endian.big); // "WAVE"
-    header.setUint32(12, 0x666d7420, Endian.big); // "fmt "
-    header.setUint32(16, 16, Endian.little); // subchunk size
-    header.setUint16(20, 1, Endian.little); // PCM
-    header.setUint16(22, channels, Endian.little);
-    header.setUint32(24, sampleRate, Endian.little);
-    header.setUint32(28, byteRate, Endian.little);
-    header.setUint16(32, blockAlign, Endian.little);
-    header.setUint16(34, bitsPerSample, Endian.little);
-    header.setUint32(36, 0x64617461, Endian.big); // "data"
-    header.setUint32(40, pcmBytes.length, Endian.little);
-
-    final builder = BytesBuilder()
-      ..add(header.buffer.asUint8List())
-      ..add(pcmBytes);
-
     final tempDir = await getTemporaryDirectory();
     final file = File(
       '${tempDir.path}/tts_${DateTime.now().millisecondsSinceEpoch}.wav',
     );
-    await file.writeAsBytes(builder.takeBytes());
+    await file.writeAsBytes(encodeWav(
+      samples,
+      sampleRate: 24000,
+      leadingSilence: AudioClipPlayer.leadingSilence,
+    ));
     return file;
   }
 
@@ -423,7 +395,7 @@ class KokoroTtsService implements TtsEngine {
     if (!_stopSignal.isCompleted) _stopSignal.complete();
     _stopSignal = Completer<void>();
     try {
-      await _player?.stop();
+      await _player.stop();
     } catch (e) {
       debugPrint('KokoroTtsService: error stopping playback: $e');
     }
@@ -439,7 +411,6 @@ class KokoroTtsService implements TtsEngine {
     _loadedModelPath = null;
     _initialization = null;
     _hasPrewarmed = false;
-    await _player?.dispose();
-    _player = null;
+    await _player.dispose();
   }
 }

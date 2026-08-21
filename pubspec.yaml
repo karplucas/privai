@@ -11,6 +11,9 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
+
+  # Utf8/calloc helpers for the Chatterbox GGUF engine's dart:ffi boundary.
+  ffi: ^2.2.0
   # The engine is picked from the file extension — .litertlm goes to LiteRT-LM,
   # .task/.bin to MediaPipe — but since 1.0.0 each engine is its own package and
   # core registers none of them, so both are listed below and named in
@@ -24,7 +27,7 @@ dependencies:
   # Note that build ships arm64 only for Android: .litertlm models cannot run on
   # an x86_64 emulator, so testing them needs a real device. The MediaPipe
   # engine still covers .task/.bin on x86_64.
-  flutter_gemma: ^1.4.2
+  flutter_gemma: ^1.5.1
   flutter_gemma_litertlm: ^1.3.1
   flutter_gemma_mediapipe: ^1.0.4
   # Chatterbox and OmniVoice run their ONNX graphs directly; this is also a
@@ -33,17 +36,17 @@ dependencies:
   flutter_onnxruntime: ^1.8.3
   whisper_ggml: ^2.4.0
   path_provider: ^2.1.1
-  audioplayers: ^5.2.1
-  record: ^6.0.0
+  audioplayers: ^6.8.1
+  record: ^7.1.1
   kokoro_tts_flutter: ^0.2.1-exp
   http: ^1.1.0
   # Native URLSession/DownloadWorker transfers continue while the app is
   # suspended or the phone is locked.
   background_downloader: ^9.5.7
-  flutter_secure_storage: ^9.0.0
-  flutter_web_auth_2: ^4.1.0
-  intl: ^0.18.1
-  permission_handler: ^11.0.1
+  flutter_secure_storage: ^10.3.1
+  flutter_web_auth_2: ^5.0.3
+  intl: ^0.20.3
+  permission_handler: ^13.0.0
   # Opens the Hugging Face model page so the user can accept the Gemma terms.
   url_launcher: ^6.2.0
   # PKCE code challenge for the Hugging Face OAuth flow.
@@ -57,7 +60,7 @@ dev_dependencies:
     sdk: flutter
   integration_test:
     sdk: flutter
-  flutter_lints: ^4.0.0
+  flutter_lints: ^6.0.0
   rename: ^3.1.0
 
 # whisper_ggml ^2.4.0 above still constrains this to ^2.1.0, so plain

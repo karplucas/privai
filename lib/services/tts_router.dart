@@ -1,14 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 
 import '../models/model_spec.dart';
 import 'app_settings.dart';
+import 'chatterbox_gguf_tts_service.dart';
 import 'chatterbox_tts_service.dart';
 import 'kokoro_tts_service.dart';
 import 'llm_service.dart';
+import 'mms_tts_service.dart';
 import 'model_catalog.dart';
 import 'model_storage.dart';
 import 'omnivoice_tts_service.dart';
-import 'speech_chunker.dart';
+import 'supertonic_tts_service.dart';
 import 'tts_engine.dart';
 
 /// Chooses the active speech-synthesis engine and speaks through it.
@@ -28,25 +32,57 @@ class TtsRouter {
   final LlmService _llm = LlmService();
   final ModelStorage _storage = ModelStorage();
 
+  /// A reply being spoken with the language model unloaded, from the unload
+  /// through the reload that follows it.
+  Future<void>? _exclusiveSpeech;
+
+  /// Completes once no exclusive-memory engine is holding the language model's
+  /// place in memory.
+  ///
+  /// The chat screen waits on this before treating the model as unavailable.
+  /// While a reply is being spoken `LlmService.isReady` is legitimately false,
+  /// and loading the model then would fight the speech engine for exactly the
+  /// memory the unload freed for it.
+  Future<void> get languageModelAvailable =>
+      _exclusiveSpeech ?? Future<void>.value();
+
+  /// Whether a reply is being spoken with the language model unloaded.
+  bool get isSpeakingExclusively => _exclusiveSpeech != null;
+
+  /// Whether any engine is speaking right now, so the UI can offer to stop it.
+  final ValueNotifier<bool> isSpeaking = ValueNotifier<bool>(false);
+
+  /// How many utterances are in flight. A reply is one utterance, but a
+  /// "read aloud" tap can overlap a reply that is still being spoken.
+  int _utterances = 0;
+
+  /// Set by [stopSpeaking] and cleared when the next reply starts speaking.
+  /// Chunks that have not begun are abandoned rather than spoken into a silence
+  /// the user asked for.
+  bool _stopRequested = false;
+
   TtsEngine engineFor(TtsEngineKind kind) => switch (kind) {
         TtsEngineKind.kokoro => KokoroTtsService(),
         TtsEngineKind.chatterbox => ChatterboxTtsService(),
         TtsEngineKind.omnivoice => OmniVoiceTtsService(),
+        TtsEngineKind.chatterboxGguf => ChatterboxGgufTtsService(),
+        TtsEngineKind.mms => MmsTtsService(),
+        TtsEngineKind.supertonic => SupertonicTtsService(),
       };
 
   /// The engine the user has selected.
   Future<TtsEngine> activeEngine() async => engineFor(await _activeKind());
 
-  /// Starts a sentence queue for one streamed LLM response.
+  /// Starts the speech queue for one streamed LLM response.
+  ///
+  /// A reply is spoken as a single utterance. It used to be split into
+  /// sentences so that the fast engines could start speaking before generation
+  /// finished, but every split is a seam: the engines pause between clips, and
+  /// splitting is what made replies sound halting. One utterance has no seams
+  /// to hide, at the cost of no audio until the reply is complete.
   Future<TtsResponseQueue> responseQueue() async {
-    final kind = await _activeKind();
-    return TtsResponseQueue._(
-      this,
-      kind,
-      speakWhileGenerating: kind == TtsEngineKind.kokoro,
-      pipelineSynthesis: kind == TtsEngineKind.kokoro,
-      sentenceChunking: kind == TtsEngineKind.kokoro,
-    );
+    _stopRequested = false;
+    return TtsResponseQueue._(this);
   }
 
   /// A TTS model and its engine are one choice, not two independent settings.
@@ -134,6 +170,7 @@ class TtsRouter {
   ///
   /// Returns false when synthesis was not possible, having already logged why.
   Future<bool> speak(String text) async {
+    _stopRequested = false;
     final kind = await _activeKind();
     final engine = engineFor(kind);
 
@@ -156,18 +193,27 @@ class TtsRouter {
     return _speakExclusively(engine, text);
   }
 
-  Future<bool> _speakExclusively(TtsEngine engine, String text) async {
-    final kind = engine.kind;
+  Future<bool> _speakExclusively(TtsEngine engine, String text) =>
+      _withLanguageModelUnloaded(engine, () => _attempt(engine, text));
 
-    // Free the language model, speak, then bring it back. The reload is in a
-    // finally so a synthesis failure cannot leave the chat unable to reply.
+  /// Frees the language model, runs [speak], then brings the model back.
+  ///
+  /// The reload is in a finally so a synthesis failure cannot leave the chat
+  /// unable to reply, and the whole span is published as [languageModelAvailable]
+  /// so a message sent while the reply is still being spoken waits for the
+  /// model instead of being told it is unavailable.
+  Future<bool> _withLanguageModelUnloaded(
+      TtsEngine engine, Future<bool> Function() speak) async {
+    final done = Completer<void>();
+    _exclusiveSpeech = done.future;
+
     final hadModel = _llm.isReady;
     if (hadModel) {
-      debugPrint('TtsRouter: unloading language model for ${kind.name}');
+      debugPrint('TtsRouter: unloading language model for ${engine.kind.name}');
       await _llm.unload();
     }
     try {
-      return await _attempt(engine, text);
+      return await speak();
     } finally {
       // Releasing the sessions here matters: stopping playback alone leaves
       // all Chatterbox weights resident, defeating exclusive mode when Gemma
@@ -180,63 +226,56 @@ class TtsRouter {
           debugPrint('TtsRouter: could not reload the language model: $e');
         }
       }
+      _exclusiveSpeech = null;
+      done.complete();
     }
   }
 
-  Future<bool> _speakBatch(TtsEngineKind kind, List<String> chunks) async {
-    if (chunks.isEmpty) return true;
-    final engine = engineFor(kind);
-    if (!kind.requiresExclusiveMemory) {
-      var okay = true;
-      for (final chunk in chunks) {
-        okay = await _attempt(engine, chunk) && okay;
-      }
-      return okay;
-    }
+  Future<bool> _attempt(TtsEngine engine, String text) =>
+      _utter(engine, () => engine.speak(text));
 
-    if (kind == TtsEngineKind.chatterbox &&
-        await _settings.keepChatterboxLoaded) {
-      var okay = true;
-      for (final chunk in chunks) {
-        okay = await _attempt(engine, chunk) && okay;
-      }
-      if (okay) return true;
-
-      // Match the single-utterance path: if co-resident allocation/inference
-      // fails, release Chatterbox before retrying with the LLM out of memory.
-      debugPrint('TtsRouter: simultaneous Chatterbox batch failed; '
-          'retrying exclusively');
-      await engine.dispose();
-    }
-
-    final hadModel = _llm.isReady;
-    if (hadModel) await _llm.unload();
+  /// Runs one piece of speech, tracking it in [isSpeaking] and honouring a stop.
+  ///
+  /// A cancelled utterance reports success: the caller uses the result to warn
+  /// that the speech engine is broken, and silence the user asked for is not a
+  /// failure to tell them about.
+  Future<bool> _utter(TtsEngine engine, Future<void> Function() speak) async {
+    if (_stopRequested) return true;
+    _utterances++;
+    isSpeaking.value = true;
     try {
-      var okay = true;
-      for (final chunk in chunks) {
-        okay = await _attempt(engine, chunk) && okay;
-      }
-      return okay;
-    } finally {
-      await engine.dispose();
-      if (hadModel) {
-        try {
-          await _llm.initializeChat(force: true);
-        } catch (e) {
-          debugPrint('TtsRouter: could not reload the language model: $e');
-        }
-      }
-    }
-  }
-
-  Future<bool> _attempt(TtsEngine engine, String text) async {
-    try {
-      await engine.speak(text);
+      await speak();
       return true;
     } catch (e) {
+      if (_stopRequested) return true;
       debugPrint('TtsRouter: ${engine.kind.name} failed: $e');
       return false;
+    } finally {
+      // A stop that lands while the reply was still being synthesised finds
+      // nothing playing to stop, and the clip then starts afterwards. Stopping
+      // again here is what actually makes the audio end.
+      if (_stopRequested) {
+        try {
+          await engine.stop();
+        } catch (e) {
+          debugPrint('TtsRouter: ${engine.kind.name} would not stop: $e');
+        }
+      }
+      if (--_utterances <= 0) {
+        _utterances = 0;
+        isSpeaking.value = false;
+      }
     }
+  }
+
+  /// Stops the reply being spoken, and keeps it stopped.
+  ///
+  /// Unlike [stopAll] this is a user's decision, so [_stopRequested] also
+  /// suppresses a synthesis that is still in flight — otherwise it would start
+  /// playing the moment it finished, just after the user asked for silence.
+  Future<void> stopSpeaking() async {
+    _stopRequested = true;
+    await stopAll();
   }
 
   /// Stops whichever engine is speaking.
@@ -281,66 +320,20 @@ class TtsRouter {
   }
 }
 
-/// Queues natural sentence chunks without delaying token rendering.
+/// Collects one streamed reply and speaks it when it is complete.
 class TtsResponseQueue {
-  TtsResponseQueue._(
-    this._router,
-    this._kind, {
-    required this.speakWhileGenerating,
-    required this.pipelineSynthesis,
-    required this.sentenceChunking,
-  });
+  TtsResponseQueue._(this._router);
 
   final TtsRouter _router;
-  final TtsEngineKind _kind;
-  final bool speakWhileGenerating;
-  final bool pipelineSynthesis;
-  final bool sentenceChunking;
-  final SpeechChunker _chunker = SpeechChunker();
-  final StringBuffer _wholeResponse = StringBuffer();
-  final List<String> _buffered = [];
-  final List<Future<bool>> _pipelined = [];
-  Future<bool> _serial = Future<bool>.value(true);
+  final StringBuffer _response = StringBuffer();
 
-  void add(String fragment) {
-    if (!sentenceChunking) {
-      _wholeResponse.write(fragment);
-      return;
-    }
-    for (final chunk in _chunker.add(fragment)) {
-      _enqueue(chunk);
-    }
-  }
+  /// Accumulates a generated fragment. Nothing is synthesised until [finish].
+  void add(String fragment) => _response.write(fragment);
 
+  /// Speaks everything collected, and reports whether the engine managed it.
   Future<bool> finish() async {
-    if (sentenceChunking) {
-      for (final chunk in _chunker.finish()) {
-        _enqueue(chunk);
-      }
-    } else {
-      final response = _wholeResponse.toString().trim();
-      if (response.isNotEmpty) _enqueue(response);
-    }
-    if (!speakWhileGenerating) {
-      return _router._speakBatch(_kind, _buffered);
-    }
-    if (pipelineSynthesis) {
-      final results = await Future.wait(_pipelined);
-      return results.every((result) => result);
-    }
-    return _serial;
-  }
-
-  void _enqueue(String chunk) {
-    if (!speakWhileGenerating) {
-      _buffered.add(chunk);
-    } else if (pipelineSynthesis) {
-      // Kokoro serializes ONNX inference internally but may synthesize the next
-      // chunk while its reusable player is playing the previous one.
-      _pipelined.add(_router._attempt(_router.engineFor(_kind), chunk));
-    } else {
-      _serial = _serial.then((okay) async =>
-          await _router._attempt(_router.engineFor(_kind), chunk) && okay);
-    }
+    final text = _response.toString().trim();
+    if (text.isEmpty) return true;
+    return _router.speak(text);
   }
 }

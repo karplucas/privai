@@ -3,7 +3,11 @@ import 'package:privai/models/model_spec.dart';
 import 'package:privai/services/tts_engine.dart';
 import 'package:privai/services/chatterbox_tts_service.dart';
 import 'package:privai/services/omnivoice_tts_service.dart';
+import 'package:privai/services/mms_tts_service.dart';
+import 'package:privai/services/supertonic_tts_service.dart';
 import 'package:privai/services/model_catalog.dart';
+import 'package:privai/services/parakeet_stt_service.dart';
+import 'package:privai/services/stt_engine.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -251,10 +255,34 @@ void main() {
       expect(chatterbox.bundleDirectory, ChatterboxTtsService.bundleName);
     });
 
+    test('the fused OmniVoice build carries one graph in place of three', () {
+      // Its export folds the embeddings encoder, the backbone and the audio
+      // heads into a single quantized graph, so it needs neither of the two
+      // graphs the split bundle loads — but it still needs the Higgs decoder
+      // and the tokenizer, which that repo does not publish.
+      final fused = catalog.byKind(ModelKind.tts).firstWhere(
+          (m) => m.bundleDirectory == OmniVoiceTtsService.int8BundleName);
+      final names = fused.files.map((f) => f.name).toSet();
+
+      expect(fused.engine, 'omnivoice');
+      expect(fused.revision, hasLength(40));
+      expect(names, containsAll(OmniVoiceTtsService.fusedFiles));
+      expect(names, contains('omnivoice.qint8.onnx_data'),
+          reason: 'the graph references its weights by this exact name');
+      expect(names, isNot(contains(OmniVoiceTtsService.llmGraph)));
+      expect(names, isNot(contains(OmniVoiceTtsService.audioEmbeddingsGraph)));
+
+      for (final borrowed in const ['higgs_decoder.onnx', 'higgs_decoder.onnx.data']) {
+        expect(
+          fused.files.firstWhere((f) => f.name == borrowed).repo,
+          'onnx-community/OmniVoice-Onnx',
+        );
+      }
+    });
+
     test('OmniVoice ships the hybrid automatic-voice pipeline', () {
-      final omnivoice = catalog
-          .byKind(ModelKind.tts)
-          .firstWhere((m) => m.engine == 'omnivoice');
+      final omnivoice = catalog.byKind(ModelKind.tts).firstWhere(
+          (m) => m.bundleDirectory == OmniVoiceTtsService.bundleName);
       final names = omnivoice.files.map((f) => f.name).toSet();
 
       expect(omnivoice.repo, 'dellusional/OmniVoice-ONNX-bidirectional');
@@ -340,6 +368,97 @@ void main() {
           contains(file.pathInRepo),
         );
       }
+    });
+
+    test('the MMS bundle carries the graph and vocabulary the service loads',
+        () {
+      final mms = catalog
+          .byKind(ModelKind.tts)
+          .firstWhere((m) => m.engine == 'mms');
+
+      expect(mms.bundleDirectory, MmsTtsService.bundleName);
+      expect(
+        mms.requiredFilenames,
+        containsAll([MmsTtsService.modelGraph, MmsTtsService.vocabFile]),
+      );
+      expect(mms.licenseNote, isNotNull,
+          reason: 'MMS is non-commercial and the user has to be told');
+    });
+
+    test('both Supertonic precisions carry every graph and voice it loads',
+        () {
+      final builds = catalog
+          .byKind(ModelKind.tts)
+          .where((m) => m.engine == 'supertonic')
+          .toList();
+
+      expect(builds, hasLength(2), reason: 'fp32 and int8 are both offered');
+      expect(
+        builds.map((m) => m.bundleDirectory).toSet(),
+        SupertonicTtsService.bundleNames.toSet(),
+        reason: 'the engine loads whichever of these directories is present',
+      );
+
+      for (final build in builds) {
+        expect(
+          build.requiredFilenames,
+          containsAll(SupertonicTtsService.requiredFiles),
+          reason: '${build.name} is missing a graph the service loads',
+        );
+        // Every voice the engine offers has to be on disk, or picking it fails.
+        expect(
+          build.requiredFilenames,
+          containsAll([
+            for (final voice in SupertonicTtsService.voiceStyles) '$voice.json',
+          ]),
+          reason: '${build.name} is missing a voice',
+        );
+        expect(build.licenseNote, isNotNull,
+            reason: '${build.name} is OpenRAIL-M and has use restrictions');
+      }
+    });
+
+    test('the int8 Supertonic build lands its graphs under the fp32 names', () {
+      // Its graphs are named `*.int8.onnx` upstream; the service looks for the
+      // plain names, so the bundle has to rename them on the way in.
+      final int8 = catalog.byKind(ModelKind.tts).firstWhere(
+          (m) => m.bundleDirectory == SupertonicTtsService.int8BundleName);
+
+      final graphs = int8.files.where((f) => f.name.endsWith('.onnx'));
+      expect(graphs, isNotEmpty);
+      for (final graph in graphs) {
+        expect(graph.pathInRepo, contains('.int8.'));
+        expect(graph.name, isNot(contains('.int8.')));
+        expect(int8.urlFor(graph).toString(), contains(graph.pathInRepo));
+      }
+    });
+
+    test('every speech-to-text model names an engine that exists', () {
+      for (final model in catalog.byKind(ModelKind.stt)) {
+        expect(model.engine, isNotNull, reason: '${model.name} has no engine');
+        expect(
+          SttEngineKind.fromName(model.engine).name,
+          model.engine,
+          reason: '${model.name} names an unknown engine "${model.engine}"',
+        );
+      }
+    });
+
+    test('the Parakeet bundle carries every graph the service loads', () {
+      final parakeet = catalog
+          .byKind(ModelKind.stt)
+          .firstWhere((m) => m.engine == 'parakeet');
+
+      expect(parakeet.bundleDirectory, ParakeetSttService.bundleName);
+      expect(
+        parakeet.requiredFilenames,
+        containsAll([
+          ParakeetSttService.preprocessorGraph,
+          ParakeetSttService.encoderGraph,
+          ParakeetSttService.jointGraph,
+          ParakeetSttService.vocabFile,
+        ]),
+      );
     });
 
     test('filenames are unique across kinds', () {

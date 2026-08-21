@@ -8,9 +8,9 @@ import 'package:permission_handler/permission_handler.dart';
 import '../services/app_settings.dart';
 import '../services/conversation_service.dart';
 import '../services/llm_service.dart';
+import '../services/stt_router.dart';
 import '../services/tts_router.dart';
 import '../services/voice_activity_detector.dart';
-import '../services/whisper_service.dart';
 import 'models_page.dart';
 import 'theme.dart';
 import 'voice_conversation_page.dart';
@@ -33,7 +33,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   final AppSettings _settings = AppSettings();
   final LlmService _llmService = LlmService();
-  final WhisperService _whisperService = WhisperService();
+  final SpeechToTextService _stt = SpeechToTextService();
   final TtsRouter _tts = TtsRouter();
   final ConversationService _conversationService = ConversationService();
 
@@ -41,6 +41,10 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   bool _isTranscribing = false;
   bool _isProcessing = false;
   bool _isModelLoading = false;
+
+  /// The reply currently being spoken, so its own bubble — and no other — can
+  /// offer to stop it.
+  String? _spokenText;
 
   /// True while tokens are arriving from the model.
   bool _isStreaming = false;
@@ -111,8 +115,8 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   }
 
   Future<void> _discardActiveVoiceRecording() async {
-    if (!await _whisperService.isRecording) return;
-    final path = await _whisperService.stopRecording();
+    if (!await _stt.isRecording) return;
+    final path = await _stt.stopRecording();
     if (path == null) return;
     try {
       await File(path).delete();
@@ -179,10 +183,73 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
   }
 
+  /// Whether the language model can answer, waiting out a load that is already
+  /// under way and starting one when nothing is.
+  ///
+  /// `TtsRouter` unloads the model to speak through an exclusive-memory engine
+  /// like Chatterbox and reloads it once the reply has been spoken. Two things
+  /// made the message after a spoken reply report "the language model is still
+  /// loading": [_isProcessing] is cleared before the speech is awaited, so the
+  /// next message can arrive while the model is still unloaded, and this
+  /// screen's own [_isModelLoading] says nothing about a reload the router owns.
+  ///
+  /// So wait, in order, for the speech that is holding the model's memory and
+  /// for any load already in flight — both are real work with an end in sight,
+  /// and starting a competing load during a spoken reply would fight the speech
+  /// engine for exactly the memory the unload freed. Only the case where
+  /// nothing is loaded, nothing is speaking and nothing is loading is a genuine
+  /// failure: the router logs a failed reload and leaves nothing to retry it.
+  /// That repair is deliberately not awaited, because a plugin initialisation
+  /// that never completes would wedge the send for good.
+  Future<bool> _ensureLlmReady() async {
+    if (_llmService.isReady) return true;
+
+    if (_tts.isSpeakingExclusively || _llmService.isModelLoading) {
+      // Mirror the wait in this screen's state so the progress bar appears
+      // rather than the send simply looking frozen.
+      setState(() => _isModelLoading = true);
+      try {
+        await _tts.languageModelAvailable;
+        if (!_llmService.isReady) await _llmService.initializeChat();
+      } catch (e) {
+        if (mounted) setState(() => _modelError = '$e');
+      } finally {
+        if (mounted) setState(() => _isModelLoading = false);
+      }
+      return _llmService.isReady;
+    }
+
+    if (!_isModelLoading) unawaited(_initializeLlm());
+    return false;
+  }
+
+  /// Notes which reply is being spoken so only its bubble offers to stop it.
+  void _markSpoken(String? text) {
+    if (!mounted) {
+      _spokenText = text;
+      return;
+    }
+    setState(() => _spokenText = text);
+  }
+
+  /// Silences the reply being spoken, at the user's request.
+  ///
+  /// The rest of the reply is abandoned rather than merely paused; the text is
+  /// already on screen, so there is nothing to resume to. When an
+  /// exclusive-memory engine is speaking this also brings the language model
+  /// back sooner, since its reload runs as soon as speech ends.
+  Future<void> _stopSpeaking() async {
+    try {
+      await _tts.stopSpeaking();
+    } catch (e) {
+      debugPrint('ChatScreen: could not stop speech: $e');
+    }
+  }
+
   Future<void> _warmUpVoiceServices() async {
     if (_sttEnabled) {
       try {
-        await _whisperService.initialize();
+        await _stt.initialize();
       } catch (e) {
         debugPrint('ChatScreen: speech-to-text unavailable: $e');
       }
@@ -268,7 +335,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final userText = text.trim();
     if (userText.isEmpty || _isProcessing) return;
 
-    if (!_llmService.isReady) {
+    if (!await _ensureLlmReady()) {
       _showMessage(_modelError ?? 'The language model is still loading.');
       return;
     }
@@ -380,22 +447,33 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     final reply = buffer.toString();
     final speechQueue = await speechQueueFuture;
     if (speechQueue != null && !failed && !stopped && reply.trim().isNotEmpty) {
+      // A long reply legitimately takes a while to speak — Chatterbox in
+      // particular only starts synthesising once generation is done and does
+      // so well slower than real time on a phone, so a flat 45s cap here cut
+      // long replies off mid-sentence. Each individual clip already has its
+      // own internal timeout (see ChatterboxTtsService._awaitPlayback and
+      // KokoroTtsService._playAfter), so this one only needs to catch the
+      // whole queue being wedged, not bound normal synthesis time.
+      _markSpoken(reply);
       final spoken = await speechQueue.finish().timeout(
-        const Duration(seconds: 45),
+        const Duration(minutes: 10),
         onTimeout: () async {
-          debugPrint('ChatScreen: speech timed out after 45 seconds');
+          debugPrint('ChatScreen: speech timed out after 10 minutes');
           await _tts.stopAll();
           return false;
         },
       );
+      _markSpoken(null);
       if (!spoken) {
         _showMessage(
           'Could not generate audio with the selected speech engine. '
           'Check the model files and try again.',
         );
       }
-    } else if ((failed || stopped) &&
-        speechQueue?.speakWhileGenerating == true) {
+    } else if (failed || stopped) {
+      // Nothing has been synthesised yet in that case — the reply is only
+      // spoken once it is complete — but an earlier reply may still be
+      // playing, and it should not run on over a cancelled one.
       await _tts.stopAll();
     }
   }
@@ -460,7 +538,9 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _speak(String text) async {
     final queue = await _tts.responseQueue();
     queue.add(text);
+    _markSpoken(text);
     final spoken = await queue.finish();
+    _markSpoken(null);
     if (!spoken) {
       _showMessage(
         'Could not generate audio with the selected speech engine. '
@@ -478,7 +558,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       _showMessage('Enable both speech-to-text and text-to-speech first.');
       return;
     }
-    if (!_llmService.isReady) {
+    if (!await _ensureLlmReady()) {
       _showMessage(_modelError ?? 'The language model is not ready.');
       return;
     }
@@ -523,8 +603,8 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     _voiceActive.value = false;
     _voiceLevel.value = 0;
     if (mounted && wasActive) setState(() {});
-    if (wasActive && await _whisperService.isRecording) {
-      final path = await _whisperService.stopRecording();
+    if (wasActive && await _stt.isRecording) {
+      final path = await _stt.stopRecording();
       if (path != null) {
         try {
           await File(path).delete();
@@ -542,7 +622,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         queuedSpeech = null;
         if (transcription == null) {
           _setVoiceModeStatus('Listening…');
-          await _whisperService.startRecording();
+          await _stt.startRecording();
           audioPath = await _waitForVoiceTurn(generation);
           if (audioPath == null) continue;
 
@@ -592,7 +672,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     while (_voiceModeIsCurrent(generation)) {
       await Future<void>.delayed(const Duration(milliseconds: 150));
       if (!_voiceModeIsCurrent(generation)) break;
-      final amplitudeDb = await _whisperService.currentAmplitudeDb;
+      final amplitudeDb = await _stt.currentAmplitudeDb;
       if (_voiceModeIsCurrent(generation)) {
         // Map ordinary speech (-50 to -10 dBFS) onto the orb's visual range.
         _voiceLevel.value = ((amplitudeDb + 50) / 40).clamp(0.0, 1.0);
@@ -600,7 +680,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       final state = detector.add(amplitudeDb, DateTime.now());
       if (state == VoiceTurnState.listening) continue;
 
-      final path = await _whisperService.stopRecording();
+      final path = await _stt.stopRecording();
       if (state == VoiceTurnState.noSpeech) {
         if (path != null) {
           try {
@@ -612,8 +692,8 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
       return path;
     }
 
-    if (await _whisperService.isRecording) {
-      final path = await _whisperService.stopRecording();
+    if (await _stt.isRecording) {
+      final path = await _stt.stopRecording();
       if (path != null) {
         try {
           await File(path).delete();
@@ -636,7 +716,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
   Future<void> _toggleRecording() async {
     if (_isRecording) {
       setState(() => _isRecording = false);
-      final audioPath = await _whisperService.stopRecording();
+      final audioPath = await _stt.stopRecording();
       if (audioPath == null) {
         _showMessage('Nothing was recorded.');
         return;
@@ -682,7 +762,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     }
 
     try {
-      await _whisperService.startRecording();
+      await _stt.startRecording();
       if (mounted) setState(() => _isRecording = true);
     } catch (e) {
       _showMessage('Could not start recording: $e');
@@ -691,7 +771,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
   Future<String> _transcribeWithMemoryHeadroom(String audioPath) async {
     await _tts.releaseForTranscription();
-    return _whisperService.transcribeFromFile(audioPath);
+    return _stt.transcribeFromFile(audioPath);
   }
 
   void _scrollToBottom() {
@@ -746,7 +826,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
     if (!await _llmService.isStale) {
       if (_sttEnabled) {
         try {
-          await _whisperService.initialize();
+          await _stt.initialize();
         } catch (e) {
           debugPrint('ChatScreen: speech-to-text unavailable: $e');
         }
@@ -767,7 +847,7 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
 
     if (_sttEnabled) {
       try {
-        await _whisperService.initialize();
+        await _stt.initialize();
       } catch (e) {
         debugPrint('ChatScreen: speech-to-text unavailable: $e');
       }
@@ -1062,7 +1142,26 @@ class ChatScreenState extends State<ChatScreen> with WidgetsBindingObserver {
         }),
         const SizedBox(width: 4),
         if (_ttsEnabled)
-          action(Icons.volume_up_outlined, 'Read aloud', () => _speak(text)),
+          ValueListenableBuilder<bool>(
+            valueListenable: _tts.isSpeaking,
+            builder: (context, speaking, _) => speaking && _spokenText == text
+                ? IconButton(
+                    key: const ValueKey('stop_speech_button'),
+                    tooltip: 'Stop speaking',
+                    icon: const Icon(Icons.stop_circle_outlined, size: 18),
+                    onPressed: _stopSpeaking,
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints:
+                        const BoxConstraints.tightFor(width: 32, height: 28),
+                    color: Theme.of(context).colorScheme.error,
+                  )
+                : action(
+                    Icons.volume_up_outlined,
+                    'Read aloud',
+                    () => _speak(text),
+                  ),
+          ),
       ],
     );
   }
